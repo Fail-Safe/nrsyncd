@@ -71,6 +71,10 @@ sequenceDiagram
 	umdns-->>network: announce mDNS (UDP/32025)
 ```
 
+## Legacy Note 📜
+
+A helper script `scripts/migrate_from_rrm_nr.sh` exists for older deployments but is not required for fresh installs.
+
 ## Installation 💾
 
 You have three progressively more automated options (plus a remote orchestration helper):
@@ -451,10 +455,6 @@ Use the summary for quick health checks (automation, monitoring) without parsing
 - Writes ephemeral state only under `/tmp` (`/tmp/nrsyncd_state`, `/tmp/nrsyncd_metrics`, `/tmp/nrsyncd_runtime`); no persistent data besides optional config.
 - mDNS exposure limited to TXT records enumerating encoded NR data; no management frames transmitted directly.
 - No credentials or sensitive secrets handled; logging omits raw neighbor hex beyond what hostapd already provides.
-
-## Legacy Note 📜
-
-A helper script `scripts/migrate_from_rrm_nr.sh` exists for older deployments but is not required for fresh installs.
 
 ## Versioning & Release 🚀
 

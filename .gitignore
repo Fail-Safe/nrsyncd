@@ -13,4 +13,3 @@ local_refs/*
 
 # Ignore tests log files
 tests/**/*.log
-tmpscript.sh
