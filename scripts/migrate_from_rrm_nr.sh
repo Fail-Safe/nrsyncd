@@ -176,7 +176,7 @@ if [ "$REMOVE_OLD" -eq 1 ]; then
 fi
 
 # 5. Advisory notes
-ADVISORY='Environment variable prefix changed (RRM_NR_ -> NRSYNCD_), runtime /tmp file names updated (/tmp/nrsyncd_*). mDNS service type now versioned `_nrsyncd_v1._udp` (primary) with legacy fallback `_rrm_nr._udp` (deprecated 2025-10-01 along with RRM_NR_* envs). Unversioned `_nrsyncd._udp` was never deployed; update discovery tooling accordingly before deprecation date.'
+ADVISORY="Environment variable prefix changed (RRM_NR_ -> NRSYNCD_), runtime /tmp file names updated (/tmp/nrsyncd_*). mDNS service type now versioned \`_nrsyncd_v1._udp\` (primary) with legacy fallback \`_rrm_nr._udp\` (deprecated 2025-10-01 along with RRM_NR_* envs). Unversioned \`_nrsyncd._udp\` was never deployed; update discovery tooling accordingly before deprecation date."
 
 if [ "$DRY_RUN" -eq 1 ]; then
   log "--- DRY RUN COMPLETE ---"
