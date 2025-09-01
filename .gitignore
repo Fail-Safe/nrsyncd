@@ -1,0 +1,15 @@
+# Ignore OS metadata
+**/.DS_Store
+**/.Spotlight-V100
+**/.Trashes
+**/Thumbs.db
+**/ehthumbs.db
+**/Desktop.ini
+
+# Extra
+package/nrsyncd/*
+local_refs/*
+.github/RE*.md
+
+# Ignore tests log files
+tests/**/*.log

@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "nrsyncd": "shellscript",
+        "nrsyncd.init": "shellscript",
+        "nrsyncd.config": "properties",
+        "wireless.config": "properties"
+    }
+}

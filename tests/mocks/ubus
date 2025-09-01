@@ -1,0 +1,70 @@
+#!/bin/sh
+# Mock ubus supporting minimal subset
+CMD=$1
+shift
+case $CMD in
+  list)
+    # output hostapd.* objects or ignore args
+    cat "$SCENARIO/ubus.list" 2>/dev/null
+    ;;
+  call)
+    OBJ=$1; METHOD=$2; shift 2
+    case $METHOD in
+      rrm_nr_get_own)
+        IFACE=${OBJ#hostapd.}
+        RAW=$(grep "^$IFACE=" "$SCENARIO/rrm.values" 2>/dev/null | cut -d= -f2-)
+        [ -z "$RAW" ] && RAW="NR-$IFACE"
+        # Derive SSID same way as bss method for consistency
+        SSID=$(grep "^$IFACE " "$SCENARIO/iwinfo.map" 2>/dev/null | cut -d' ' -f2-)
+        [ -z "$SSID" ] && SSID=TestSSID
+        # Deterministic synthetic BSSID based on iface hash
+        h=$(printf '%s' "$IFACE" | md5sum 2>/dev/null | awk '{print $1}')
+        [ -z "$h" ] && h=$(printf '%s' "$IFACE" | od -An -tx1 | tr -d ' \n')
+        # Use first 12 hex chars (6 bytes)
+        b1=${h%????????????????????????????}; b1=$(printf '%s' "$h" | cut -c1-12)
+        # Format into MAC (ensure length 12)
+        while [ "${#b1}" -lt 12 ]; do b1="${b1}0"; done
+        BSSID=$(printf '%s' "$b1" | sed 's/\(..\)/\1:/g; s/:$//')
+        HEX="010203" # static minimal hex payload placeholder
+        printf '{"value":["%s","%s","%s"]}' "$BSSID" "$SSID" "$HEX"
+        ;;
+      bss)
+        IFACE=${OBJ#hostapd.}
+        SSID=$(grep "^$IFACE " "$SCENARIO/iwinfo.map" 2>/dev/null | cut -d' ' -f2-)
+        [ -z "$SSID" ] && SSID=TestSSID
+        printf '{"ssid":"%s"}' "$SSID"
+        ;;
+      browse)
+        if [ "$OBJ" = "umdns" ]; then
+          cat "$SCENARIO/umdns.browse" 2>/dev/null
+        fi
+        ;;
+      rrm_nr_list)
+        IFACE=${OBJ#hostapd.}
+        if [ -n "$STATE_DIR" ] && [ -f "$STATE_DIR/$IFACE.current" ]; then
+          cur=$(cat "$STATE_DIR/$IFACE.current" 2>/dev/null)
+          printf '{"list":%s}' "$cur"
+        else
+          echo '{"list":[]}'
+        fi
+        ;;
+      rrm_nr_set)
+        IFACE=${OBJ#hostapd.}
+        payload="$*"
+        # Record set operation for assertions
+        if [ -n "$STATE_DIR" ]; then
+          [ -d "$STATE_DIR" ] || mkdir -p "$STATE_DIR" 2>/dev/null
+          echo "$IFACE $payload" >> "$STATE_DIR/nrsyncd_set.log" 2>/dev/null
+          echo "MOCK_UBUS_SET $IFACE $payload" >> "${LOG_FILE:-/tmp/nrsyncd_test.log}" 2>/dev/null
+          # Persist new list for subsequent rrm_nr_list calls
+          echo "$payload" | sed -n 's/.*"list"[ ]*:[ ]*\(\[.*\]\).*/\1/p' > "$STATE_DIR/$IFACE.current" 2>/dev/null
+        fi
+        echo "(mock ubus) rrm_nr_set $IFACE" >&2
+        echo '{}'
+        ;;
+      update)
+  ;; # ignore explicit 'umdns update'
+    esac
+    ;;
+  *) ;;
+esac

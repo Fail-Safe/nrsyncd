@@ -1,0 +1,56 @@
+#!/bin/sh
+# md5sum test mock with recursion guard & fallbacks
+SELF="$0"
+REAL_MD5SUM=$(command -v md5sum 2>/dev/null || true)
+if [ -n "$REAL_MD5SUM" ] && [ "$REAL_MD5SUM" != "$SELF" ]; then
+  exec "$REAL_MD5SUM" "$@"
+fi
+REAL_MD5=$(command -v md5 2>/dev/null || true)
+
+hash_stdin() {
+  data=$(cat 2>/dev/null)
+  if [ -n "$REAL_MD5" ] && [ "$REAL_MD5" != "$SELF" ]; then
+    # macOS md5 outputs: MD5 (stdin) = <hash>
+    h=$(printf '%s' "$data" | md5 2>/dev/null | sed 's/.*= *//')
+    [ -n "$h" ] && { printf '%s  -\n' "$h"; return; }
+  fi
+  if command -v cksum >/dev/null 2>&1; then
+    # Use cksum first field (CRC) as pseudo-hash
+    h=$(printf '%s' "$data" | cksum | awk '{print $1}')
+    printf '%s  -\n' "$h"
+    return
+  fi
+  # Length + first 8 chars fallback
+  len=$(printf '%s' "$data" | wc -c | tr -d ' ')
+  head=$(printf '%s' "$data" | cut -c1-8)
+  printf '%s  -\n' "${len}${head}"
+}
+
+if [ $# -gt 0 ]; then
+  # Hash first file/arg; if '-' read stdin
+  if [ "$1" = '-' ]; then
+    hash_stdin
+    exit 0
+  fi
+  if [ -f "$1" ]; then
+    if [ -n "$REAL_MD5" ] && [ "$REAL_MD5" != "$SELF" ]; then
+      h=$(md5 -q "$1" 2>/dev/null)
+      [ -n "$h" ] && { printf '%s  %s\n' "$h" "$1"; exit 0; }
+    fi
+    if command -v cksum >/dev/null 2>&1; then
+      h=$(cksum "$1" | awk '{print $1}')
+      printf '%s  %s\n' "$h" "$1"
+      exit 0
+    fi
+    data=$(cat "$1")
+    len=$(printf '%s' "$data" | wc -c | tr -d ' ')
+    head=$(printf '%s' "$data" | cut -c1-8)
+    printf '%s  %s\n' "${len}${head}" "$1"
+    exit 0
+  else
+    printf '%s' "$1" | hash_stdin
+    exit 0
+  fi
+else
+  hash_stdin
+fi
