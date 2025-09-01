@@ -62,6 +62,9 @@ Typical flow:
   3. Start new service: /etc/init.d/nrsyncd start
   4. Validate; optionally remove old service/config.
 
+Installer interplay:
+- The nrsyncd installer aborts on live systems if legacy rrm_nr is detected and no /etc/config/nrsyncd exists yet. Run this script first or pass --auto-migrate-legacy to the installer to proceed automatically.
+
 Idempotency: Re-running will skip steps already applied unless --force or --remove-old specified.
 EOF
 }
@@ -85,7 +88,14 @@ OLD_INIT=/etc/init.d/rrm_nr
 NEW_INIT=/etc/init.d/nrsyncd
 
 SUMMARY=""
-append_summary() { SUMMARY="$SUMMARY\n$*"; }
+append_summary() {
+  if [ -n "$SUMMARY" ]; then
+    SUMMARY="${SUMMARY}
+$*"
+  else
+    SUMMARY="$*"
+  fi
+}
 
 exists() { [ -e "$1" ]; }
 
@@ -166,7 +176,7 @@ if [ "$REMOVE_OLD" -eq 1 ]; then
 fi
 
 # 5. Advisory notes
-ADVISORY="Environment variable prefix changed (RRM_NR_ -> NRSYNCD_), runtime /tmp file names updated (/tmp/nrsyncd_*). mDNS service type now versioned `_nrsyncd_v1._udp` (primary) with legacy fallback `_rrm_nr._udp` (deprecated 2025-10-01 along with RRM_NR_* envs). Unversioned `_nrsyncd._udp` was never deployed; update discovery tooling accordingly before deprecation date."
+ADVISORY="Environment variable prefix changed (RRM_NR_ -> NRSYNCD_), runtime /tmp file names updated (/tmp/nrsyncd_*). mDNS service type now versioned \`_nrsyncd_v1._udp\` (primary) with legacy fallback \`_rrm_nr._udp\` (deprecated 2025-10-01 along with RRM_NR_* envs). Unversioned \`_nrsyncd._udp\` was never deployed; update discovery tooling accordingly before deprecation date."
 
 if [ "$DRY_RUN" -eq 1 ]; then
   log "--- DRY RUN COMPLETE ---"

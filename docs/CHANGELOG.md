@@ -19,6 +19,7 @@ Initial public release (versioned service adoption from day one).
 
 - Service port changed from UDP/5247 (CAPWAP Data channel) to UDP/32025 (unassigned mnemonic) to avoid protocol collision.
 - mDNS discovery order: primary `_nrsyncd_v1._udp` (versioned) with legacy fallback `_rrm_nr._udp` only. Unversioned `_nrsyncd._udp` name intentionally never deployed.
+- Installer: on live systems, aborts when legacy rrm_nr is detected and no nrsyncd config exists (use `--auto-migrate-legacy` or run migration script first) to prevent mixed states.
 
 ### Compatibility / Deprecations
 

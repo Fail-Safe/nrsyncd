@@ -75,6 +75,42 @@ sequenceDiagram
 
 A helper script `scripts/migrate_from_rrm_nr.sh` exists for older deployments but is not required for fresh installs.
 
+Installer behavior with legacy rrm_nr:
+- On a live system (no `--prefix`) if legacy `rrm_nr` config/service is detected and `/etc/config/nrsyncd` is not present, `scripts/install.sh` aborts to avoid a mixed state.
+- To proceed, either run `sh scripts/migrate_from_rrm_nr.sh` first, or re-run the installer with `--auto-migrate-legacy` to migrate automatically.
+
+### Upgrade from rrm_nr (Quick start) ⬆️
+
+Follow these minimal steps on an existing device running the legacy rrm_nr service:
+
+```sh
+# 0) (Optional) stop legacy service before changes
+[ -x /etc/init.d/rrm_nr ] && /etc/init.d/rrm_nr stop || true
+
+# 1) Migrate config (safe, idempotent). This also disables the old service when possible.
+sh scripts/migrate_from_rrm_nr.sh
+# Or do it one-shot during install:
+# sh scripts/install.sh --auto-migrate-legacy
+
+# 2) Install nrsyncd (enables/starts service by default)
+sh scripts/install.sh
+
+# 3) Validate runtime and mDNS
+logread | grep nrsyncd
+/etc/init.d/nrsyncd status
+ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'
+
+# 4) (Recommended) Remove legacy artifacts after validation
+sh scripts/migrate_from_rrm_nr.sh --remove-old --force
+
+# 5) (Optional) Persist files across firmware upgrades
+sh scripts/install.sh --add-sysupgrade --no-start
+```
+
+Notes:
+- Remote installs also support migration via `--auto-migrate-legacy` (forward this flag with your remote run).
+- The migration helper won’t modify your wireless config; ensure 802.11k/BSS transition are enabled per the example.
+
 ## Installation 💾
 
 You have three progressively more automated options (plus a remote orchestration helper):
@@ -97,6 +133,7 @@ Options:
  - `--deps-auto-yes` / `--deps-auto-no` non‑interactive dependency handling
  - `--install-optional` install high‑resolution sleep helper (coreutils-sleep or coreutils)
  - `--fix-wireless` auto-enable missing 802.11k / BSS transition options
+ - `--auto-migrate-legacy` if legacy `rrm_nr` is detected on a live system, migrate it automatically instead of aborting
 
 ### Remote Install From Your Workstation 📡
 
@@ -116,6 +153,9 @@ sh scripts/install.sh --remote ap1
 # Multiple hosts (comma or repeat) + auto dependency install + optional extras
 sh scripts/install.sh --remote ap1,ap2,ap3 --deps-auto-yes --install-optional
 sh scripts/install.sh --remote ap1 --remote ap2 --remote ap3 --force-config
+
+# Remote with automatic legacy migration if detected on targets
+sh scripts/install.sh --remote ap1,ap2 --auto-migrate-legacy
 
 # Custom SSH port + force config + integrity check (automatic)
 sh scripts/install.sh --remote ap1 --ssh-opts '-p 2222' --force-config
@@ -152,6 +192,7 @@ Notes:
 - Dry-run still generates a manifest locally then removes it (no remote connections made).
 - Missing optional files are noted but not fatal.
 - Failures leave the staging directory intact for that host (unless missing connectivity precluded creation).
+ - Legacy note: remote installs will also abort on legacy `rrm_nr` unless `--auto-migrate-legacy` is included in the forwarded flags.
 
 ### 2. Manual Copy (Minimalistic) 📠
 
@@ -341,6 +382,7 @@ Command | Purpose | Notes
 `diag` / `timing_check` | Readiness probe timings for each iface | Alias: `timing-check`
 `skiplist` | Effective configured skip_iface entries | Normalized view
 `version` | Init script version (and git hash if available) | Sync with release tag
+`metadata` | Show parsed live mDNS TXT advertisement (SSIDn tokens + metadata v/c/h) | Useful to verify ordering and hash
 
 ### Reloading Configuration ↻
 
