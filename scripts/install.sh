@@ -99,6 +99,8 @@ Options:
   --status-wait <sec>  After starting service, poll up to <sec> seconds for runtime status file.
   --auto-migrate-legacy  If legacy rrm_nr config/service present and no nrsyncd config yet (live system), run migration script automatically.
   -h, --help           Show this help.
+Notes:
+- On a live system (no --prefix), if legacy rrm_nr is detected and no /etc/config/nrsyncd exists, this installer now aborts to avoid a mixed state. Re-run with --auto-migrate-legacy or run scripts/migrate_from_rrm_nr.sh manually, then re-run install.
 Examples:
   sh scripts/install.sh
   sh scripts/install.sh --no-start --prefix /builder/root
@@ -228,7 +230,9 @@ if [ -z "$REMOTE_HOSTS" ] && [ -z "$PREFIX" ]; then
           echo "[nrsyncd] WARNING: migration script not found; cannot auto-migrate" >&2
         fi
       else
-        echo "[nrsyncd] LEGACY DETECTED: rrm_nr config/service present. Run: sh scripts/migrate_from_rrm_nr.sh (or re-run install with --auto-migrate-legacy) before proceeding for a clean transition." >&2
+  echo "[nrsyncd] LEGACY DETECTED: rrm_nr config/service present. Run: sh scripts/migrate_from_rrm_nr.sh (or re-run install with --auto-migrate-legacy) before proceeding for a clean transition." >&2
+  echo "[nrsyncd] Aborting install to prevent mixed legacy/new state. After migration, re-run this installer." >&2
+  exit 2
       fi
     fi
   fi

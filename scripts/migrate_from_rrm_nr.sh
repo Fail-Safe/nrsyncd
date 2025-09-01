@@ -62,6 +62,9 @@ Typical flow:
   3. Start new service: /etc/init.d/nrsyncd start
   4. Validate; optionally remove old service/config.
 
+Installer interplay:
+- The nrsyncd installer aborts on live systems if legacy rrm_nr is detected and no /etc/config/nrsyncd exists yet. Run this script first or pass --auto-migrate-legacy to the installer to proceed automatically.
+
 Idempotency: Re-running will skip steps already applied unless --force or --remove-old specified.
 EOF
 }

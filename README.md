@@ -75,6 +75,10 @@ sequenceDiagram
 
 A helper script `scripts/migrate_from_rrm_nr.sh` exists for older deployments but is not required for fresh installs.
 
+Installer behavior with legacy rrm_nr:
+- On a live system (no `--prefix`) if legacy `rrm_nr` config/service is detected and `/etc/config/nrsyncd` is not present, `scripts/install.sh` aborts to avoid a mixed state.
+- To proceed, either run `sh scripts/migrate_from_rrm_nr.sh` first, or re-run the installer with `--auto-migrate-legacy` to migrate automatically.
+
 ## Installation 💾
 
 You have three progressively more automated options (plus a remote orchestration helper):
@@ -97,6 +101,7 @@ Options:
  - `--deps-auto-yes` / `--deps-auto-no` non‑interactive dependency handling
  - `--install-optional` install high‑resolution sleep helper (coreutils-sleep or coreutils)
  - `--fix-wireless` auto-enable missing 802.11k / BSS transition options
+ - `--auto-migrate-legacy` if legacy `rrm_nr` is detected on a live system, migrate it automatically instead of aborting
 
 ### Remote Install From Your Workstation 📡
 
@@ -116,6 +121,9 @@ sh scripts/install.sh --remote ap1
 # Multiple hosts (comma or repeat) + auto dependency install + optional extras
 sh scripts/install.sh --remote ap1,ap2,ap3 --deps-auto-yes --install-optional
 sh scripts/install.sh --remote ap1 --remote ap2 --remote ap3 --force-config
+
+# Remote with automatic legacy migration if detected on targets
+sh scripts/install.sh --remote ap1,ap2 --auto-migrate-legacy
 
 # Custom SSH port + force config + integrity check (automatic)
 sh scripts/install.sh --remote ap1 --ssh-opts '-p 2222' --force-config
@@ -152,6 +160,7 @@ Notes:
 - Dry-run still generates a manifest locally then removes it (no remote connections made).
 - Missing optional files are noted but not fatal.
 - Failures leave the staging directory intact for that host (unless missing connectivity precluded creation).
+ - Legacy note: remote installs will also abort on legacy `rrm_nr` unless `--auto-migrate-legacy` is included in the forwarded flags.
 
 ### 2. Manual Copy (Minimalistic) 📠
 
