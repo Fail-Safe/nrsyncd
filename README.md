@@ -79,6 +79,38 @@ Installer behavior with legacy rrm_nr:
 - On a live system (no `--prefix`) if legacy `rrm_nr` config/service is detected and `/etc/config/nrsyncd` is not present, `scripts/install.sh` aborts to avoid a mixed state.
 - To proceed, either run `sh scripts/migrate_from_rrm_nr.sh` first, or re-run the installer with `--auto-migrate-legacy` to migrate automatically.
 
+### Upgrade from rrm_nr (Quick start) ⬆️
+
+Follow these minimal steps on an existing device running the legacy rrm_nr service:
+
+```sh
+# 0) (Optional) stop legacy service before changes
+[ -x /etc/init.d/rrm_nr ] && /etc/init.d/rrm_nr stop || true
+
+# 1) Migrate config (safe, idempotent). This also disables the old service when possible.
+sh scripts/migrate_from_rrm_nr.sh
+# Or do it one-shot during install:
+# sh scripts/install.sh --auto-migrate-legacy
+
+# 2) Install nrsyncd (enables/starts service by default)
+sh scripts/install.sh
+
+# 3) Validate runtime and mDNS
+logread | grep nrsyncd
+/etc/init.d/nrsyncd status
+ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'
+
+# 4) (Recommended) Remove legacy artifacts after validation
+sh scripts/migrate_from_rrm_nr.sh --remove-old --force
+
+# 5) (Optional) Persist files across firmware upgrades
+sh scripts/install.sh --add-sysupgrade --no-start
+```
+
+Notes:
+- Remote installs also support migration via `--auto-migrate-legacy` (forward this flag with your remote run).
+- The migration helper won’t modify your wireless config; ensure 802.11k/BSS transition are enabled per the example.
+
 ## Installation 💾
 
 You have three progressively more automated options (plus a remote orchestration helper):
@@ -350,6 +382,7 @@ Command | Purpose | Notes
 `diag` / `timing_check` | Readiness probe timings for each iface | Alias: `timing-check`
 `skiplist` | Effective configured skip_iface entries | Normalized view
 `version` | Init script version (and git hash if available) | Sync with release tag
+`metadata` | Show parsed live mDNS TXT advertisement (SSIDn tokens + metadata v/c/h) | Useful to verify ordering and hash
 
 ### Reloading Configuration ↻
 

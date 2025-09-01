@@ -88,7 +88,14 @@ OLD_INIT=/etc/init.d/rrm_nr
 NEW_INIT=/etc/init.d/nrsyncd
 
 SUMMARY=""
-append_summary() { SUMMARY="$SUMMARY\n$*"; }
+append_summary() {
+  if [ -n "$SUMMARY" ]; then
+    SUMMARY="${SUMMARY}
+$*"
+  else
+    SUMMARY="$*"
+  fi
+}
 
 exists() { [ -e "$1" ]; }
 
