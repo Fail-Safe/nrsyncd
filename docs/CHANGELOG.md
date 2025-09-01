@@ -2,6 +2,19 @@
 
 All notable changes will be documented here. Dates use UTC.
 
+## [1.0.1] - 2025-09-01
+
+### Fixed
+
+- Admin `metadata` subcommand: prefer authoritative umdns announcements; robust TXT parsing; correct SSID token regex; outputs version/count/hash and sample SSID entries.
+- Installer: `--add-sysupgrade` now de-duplicates `/etc/sysupgrade.conf` and prunes legacy `rrm_nr` entries. Note: `/etc/config` is persisted by OpenWrt by default, so `/etc/config/nrsyncd` is not added explicitly.
+- Migration: `--remove-old` also removes leftover legacy binary (`/usr/bin/rrm_nr`) and library (`/lib/rrm_nr_common.sh`), even if config/init were already removed; config removal remains gated by `--force`.
+
+### Changed
+
+- Tests: Added metadata scenario exercising real `metadata_service` via a shim; mocks updated for TXT arrays with `v/c/h` tokens.
+- Developer UX: Improved `jsonfilter` selector guidance (`[*]` for arrays) and refined logs/warnings during startup and discovery.
+
 ## [1.0.0] - 2025-09-01
 
 Initial public release (versioned service adoption from day one).

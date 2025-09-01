@@ -504,6 +504,27 @@ if [ "$ADD_SYSUPGRADE" -eq 1 ]; then
   PERSIST_FILE="$(dest /etc/sysupgrade.conf)"
   # Ensure file exists
   touch "$PERSIST_FILE" 2>/dev/null || true
+  # Remove legacy rrm_nr persistence entries and deduplicate file to avoid mixed states
+  tmp_persist=$(mktemp 2>/dev/null || mktemp -t nrsyncd_sysup) || tmp_persist="$PERSIST_FILE.tmp"
+  legacy_removed=0
+  if [ -s "$PERSIST_FILE" ]; then
+    # Filter out known legacy lines and collapse duplicates while preserving order
+    awk '
+      BEGIN{ seen["."]=1 }
+      {
+        line=$0
+        # Drop obsolete entries we should not persist explicitly
+        if(line=="/etc/init.d/rrm_nr" || line=="/usr/bin/rrm_nr" || line=="/lib/rrm_nr_common.sh" || line=="/etc/config/rrm_nr" || line=="/etc/config/nrsyncd"){ next }
+        if(!(line in seen)){ print; seen[line]=1 }
+      }
+    ' "$PERSIST_FILE" >"$tmp_persist" 2>/dev/null || cp "$PERSIST_FILE" "$tmp_persist" 2>/dev/null || true
+    # Detect if any legacy lines were present by diffing counts
+    before_cnt=$(wc -l < "$PERSIST_FILE" 2>/dev/null || echo 0)
+    after_cnt=$(wc -l < "$tmp_persist" 2>/dev/null || echo 0)
+    [ "$after_cnt" -lt "$before_cnt" ] && legacy_removed=1 || true
+    mv "$tmp_persist" "$PERSIST_FILE" 2>/dev/null || cat "$tmp_persist" > "$PERSIST_FILE" 2>/dev/null || true
+    rm -f "$tmp_persist" 2>/dev/null || true
+  fi
   add_entry() {
     path=$1
     grep -q "^$path$" "$PERSIST_FILE" 2>/dev/null || echo "$path" >>"$PERSIST_FILE"
@@ -511,7 +532,11 @@ if [ "$ADD_SYSUPGRADE" -eq 1 ]; then
   add_entry /etc/init.d/nrsyncd
   add_entry /usr/bin/nrsyncd
   add_entry /lib/nrsyncd_common.sh
-  echo "[nrsyncd] Added persistence entries to /etc/sysupgrade.conf"
+  if [ "$legacy_removed" -eq 1 ]; then
+    echo "[nrsyncd] Added persistence entries and pruned obsolete lines in /etc/sysupgrade.conf"
+  else
+    echo "[nrsyncd] Added persistence entries to /etc/sysupgrade.conf"
+  fi
 fi
 
 echo "[nrsyncd] Done. Check: logread | grep nrsyncd"

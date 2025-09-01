@@ -18,6 +18,7 @@ Inspiration for this `nrsyncd` project comes from pioneering efforts by [Kiss Á
 ## Features ✨
 
 - Multi‑radio / multi‑band support (sequential `SSIDn=` TXT records)
+- TXT metadata appended after SSID entries: `v=1`, `c=<count>`, `h=<8hex>` (extensible; safe for consumers to ignore unknown keys)
 - Helps band / BSS steering by advertising sibling BSS information
 - Works once `umdns` is functioning (no extra controller needed)
 - Minimal logging (single tag `nrsyncd`) but enough to diagnose startup
@@ -44,7 +45,7 @@ Component | Purpose
 2. Wait until that many `hostapd.*` objects appear on `ubus` (ensures hostapd ready).
 3. For each `hostapd.*`: call `ubus call <obj> rrm_nr_get_own` (method name unchanged) → JSON `{"value":"..."}`.
 4. Build concatenated string `+SSID<n>=<value>` (delimiter `+` chosen because invalid in SSIDs) then split into positional args.
-5. Start daemon & register mDNS `nrsyncd` UDP/32025 with those TXT records.
+5. Start daemon & register versioned mDNS service `nrsyncd_v1` (type `_nrsyncd_v1._udp`) on UDP/32025 with those TXT records (all `SSIDn=` first, then metadata `v/c/h`). Legacy `_rrm_nr._udp` is browsed only as a fallback for discovery.
 
 ### Startup Sequence (Mermaid) 🧜‍♀️
 
@@ -67,8 +68,8 @@ sequenceDiagram
 	ubus-->>init: {"value":"NR..."}
 	init->>init: assemble +SSIDn=NR tokens (delimiter '+')
 	init->>daemon: exec /usr/bin/nrsyncd SSID1=... SSID2=...
-	init->>umdns: register service nrsyncd (TXT=SSIDn=...)
-	umdns-->>network: announce mDNS (UDP/32025)
+	init->>umdns: register service nrsyncd_v1 (TXT=SSIDn=... v/c/h)
+	umdns-->>network: announce _nrsyncd_v1._udp (UDP/32025)
 ```
 
 ## Legacy Note 📜
@@ -99,12 +100,18 @@ sh scripts/install.sh
 logread | grep nrsyncd
 /etc/init.d/nrsyncd status
 ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'
+	# Tip: arrays in jsonfilter need [*]; omitting it often yields an empty []
 
 # 4) (Recommended) Remove legacy artifacts after validation
 sh scripts/migrate_from_rrm_nr.sh --remove-old --force
 
 # 5) (Optional) Persist files across firmware upgrades
 sh scripts/install.sh --add-sysupgrade --no-start
+	# Adds runtime paths to /etc/sysupgrade.conf:
+	#   /etc/init.d/nrsyncd
+	#   /usr/bin/nrsyncd
+	#   /lib/nrsyncd_common.sh
+	# Note: /etc/config is persisted by OpenWrt by default, so /etc/config/nrsyncd is not added explicitly.
 ```
 
 Notes:
@@ -310,7 +317,7 @@ uci commit nrsyncd
 
 Full restart still required only if you change structural aspects before daemon start (e.g. enabling/disabling service) or to clear internal state forcibly.
 
-Environment mapping (init script → daemon) – new primary names with legacy (`RRM_NR_*`) still exported for backward compatibility in 1.0.0 (deprecated 2025-10-01):
+Environment mapping (init script → daemon) – new primary names with legacy (`RRM_NR_*`) still exported for backward compatibility in 1.0.x (deprecated 2025-10-01):
 - `NRSYNCD_UPDATE_INTERVAL` → `UPDATE_INTERVAL`
 - `NRSYNCD_JITTER_MAX` → `JITTER_MAX`
 - `NRSYNCD_DEBUG` → enables debug log path

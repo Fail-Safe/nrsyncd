@@ -4,18 +4,23 @@ read_input() { cat; }
 INPUT=$(read_input)
 expr=""
 while [ $# -gt 0 ]; do
-  case $1 in
+  case "$1" in
     -e) shift; expr=$1 ;;
-  esac; shift
+    -l*) shift ;; # ignore length options like -l1
+    *) shift ;;
+  esac
 done
-case $expr in
+case "$expr" in
   '$.value') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\([^}]*\).*/\1/p' ;;
-  '$.value[0]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["\([^"]*\)".*/\1/p' ;;
-  '$.value[1]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"]*","\([^"]*\)".*/\1/p' ;;
-  '$.value[2]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"]*","[^"]*","\([^"]*\)".*/\1/p' ;;
+  '$.value[0]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["\([^"\]*\)".*/\1/p' ;;
+  '$.value[1]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"\]*","\([^"\]*\)".*/\1/p' ;;
+  '$.value[2]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"\]*","[^"\]*","\([^"\]*\)".*/\1/p' ;;
   '@.ssid') echo "$INPUT" | sed -n 's/.*"ssid"[ ]*:[ ]*"\(.*\)".*/\1/p' ;;
   '@.list[@]') echo "$INPUT" | sed -n 's/.*"list"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/^[ ]*\"//;s/\"$//' ;;
-  '@["_nrsyncd_v1._udp"][*].txt[*]') echo "$INPUT" | sed -n 's/.*"txt"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/[ \"}]//g' ;;
-  '@["_rrm_nr._udp"][*].txt[*]') echo "$INPUT" | sed -n 's/.*"txt"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/[ \"}]//g' ;;
-  *) ;; # ignore
+  *)
+    # Any selector containing txt[...].txt[*] -> output each TXT item on its own line, trimming quotes/space
+    if printf '%s' "$expr" | grep -q 'txt\['; then
+      echo "$INPUT" | sed -n 's/.*"txt"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/^[[:space:]]*\"//; s/\"[[:space:]]*$//'
+    fi
+    ;;
 esac

@@ -39,6 +39,16 @@ case $CMD in
           cat "$SCENARIO/umdns.browse" 2>/dev/null
         fi
         ;;
+      announcements)
+        if [ "$OBJ" = "umdns" ]; then
+          # Simulate announcements having a .local key and the same TXT
+          # Transform the browse JSON into announcements shape by adding .local suffix
+          # for simplicity we just replace the key string.
+          if [ -f "$SCENARIO/umdns.browse" ]; then
+            sed 's/"_nrsyncd_v1._udp"/"_nrsyncd_v1._udp.local"/g; s/"_rrm_nr._udp"/"_rrm_nr._udp.local"/g' "$SCENARIO/umdns.browse"
+          fi
+        fi
+        ;;
       rrm_nr_list)
         IFACE=${OBJ#hostapd.}
         if [ -n "$STATE_DIR" ] && [ -f "$STATE_DIR/$IFACE.current" ]; then
