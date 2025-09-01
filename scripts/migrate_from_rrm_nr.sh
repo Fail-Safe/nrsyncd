@@ -17,7 +17,7 @@
 #
 # Features:
 #   --dry-run      : Show what would change, perform no modifications
-#   --remove-old   : After successful migration, delete legacy service/config
+#   --remove-old   : After successful migration, delete legacy service/config/binary/library
 #   --verbose      : Extra logging
 #   --no-service   : Skip service enable/disable actions (config only)
 #   --force        : Overwrite existing /etc/config/nrsyncd (default: skip if exists)
@@ -86,6 +86,8 @@ OLD_CFG=/etc/config/rrm_nr
 NEW_CFG=/etc/config/nrsyncd
 OLD_INIT=/etc/init.d/rrm_nr
 NEW_INIT=/etc/init.d/nrsyncd
+OLD_BIN=/usr/bin/rrm_nr
+OLD_LIB=/lib/rrm_nr_common.sh
 
 SUMMARY=""
 append_summary() {
@@ -100,9 +102,20 @@ $*"
 exists() { [ -e "$1" ]; }
 
 # 1. Pre-flight checks
+# If neither legacy config nor init exist, we may still want to proceed when --remove-old
+# is provided to clean up leftover binary/library paths.
 if ! exists "$OLD_CFG" && ! exists "$OLD_INIT"; then
-  log "Nothing to migrate: neither $OLD_CFG nor $OLD_INIT present.";
-  exit 0
+  if [ "$REMOVE_OLD" -eq 1 ]; then
+    if ! exists "$OLD_BIN" && ! exists "$OLD_LIB"; then
+      log "Nothing to migrate or remove: no legacy config/init/binary/library present.";
+      exit 0
+    fi
+    # Else: continue to removal section
+    vlog "Proceeding with --remove-old to clean up legacy binary/library."
+  else
+    log "Nothing to migrate: neither $OLD_CFG nor $OLD_INIT present.";
+    exit 0
+  fi
 fi
 
 # 2. Config migration
@@ -154,13 +167,27 @@ fi
 # 4. Optional removal of legacy artifacts
 if [ "$REMOVE_OLD" -eq 1 ]; then
   if [ "$DRY_RUN" -eq 1 ]; then
-    log "(dry-run) Would remove old artifacts: $OLD_INIT $OLD_CFG (if present)."
+    log "(dry-run) Would remove old artifacts: $OLD_INIT $OLD_BIN $OLD_LIB $OLD_CFG (config only with --force)."
   else
     if exists "$OLD_INIT"; then
       if rm -f "$OLD_INIT"; then
         append_summary "Removed old init script $OLD_INIT"
       else
         warn "Failed to remove $OLD_INIT"
+      fi
+    fi
+    if exists "$OLD_BIN"; then
+      if rm -f "$OLD_BIN"; then
+        append_summary "Removed old binary $OLD_BIN"
+      else
+        warn "Failed to remove $OLD_BIN"
+      fi
+    fi
+    if exists "$OLD_LIB"; then
+      if rm -f "$OLD_LIB"; then
+        append_summary "Removed old library $OLD_LIB"
+      else
+        warn "Failed to remove $OLD_LIB"
       fi
     fi
     if exists "$OLD_CFG" && [ "$FORCE" -eq 1 ]; then

@@ -8,13 +8,14 @@ START=99
 NAME=nrsyncd
 # shellcheck disable=SC2034  # procd flag used implicitly
 USE_PROCD=1
-NRSYNCD_INIT_VERSION="1.0.0"
+NRSYNCD_INIT_VERSION="1.0.1"
 # shellcheck disable=SC2034  # rc.common reads EXTRA_COMMANDS
 EXTRA_COMMANDS="mapping mapping_json mapping-json neighbors cache refresh diag metrics timing_check timing-check version status skiplist summary reset_metrics metadata"
 # shellcheck disable=SC2034  # rc.common reads EXTRA_HELP
 EXTRA_HELP="  mapping        Show iface/BSSID/channel/freq/width/center1/SSID\n  mapping_json   JSON array variant of mapping (mapping-json also)\n  neighbors      Dump current neighbor lists\n  cache          Show cache directory summary\n  refresh        Force immediate refresh (SIGUSR1)\n  diag           Probe readiness timings (per iface)\n  metrics        Show metrics counters (if present)\n  summary        Concise metrics summary (ratios, uniques)\n  reset_metrics  Reset metrics/unique remote counters (SIGUSR2)\n  timing_check   Alias of diag (timing-check also accepted)\n  version        Show init script version + git hash (if available)\n  status         Show runtime state + metrics summary\n  skiplist       Show configured skip_iface entries (effective)\n  metadata       Show advertised SSID metadata (parsed)\n"
 
-. /lib/functions.sh
+# Optional: on OpenWrt this exists; allow tests to source the script without it.
+. /lib/functions.sh 2>/dev/null || true
 # Rebranded common helpers (legacy name source removed; keep only new file)
 . /lib/nrsyncd_common.sh 2>/dev/null || true
 
@@ -523,26 +524,62 @@ metadata_service() {
 	if ! command -v ubus >/dev/null 2>&1 || ! command -v jsonfilter >/dev/null 2>&1; then
 		echo 'metadata: requires ubus + jsonfilter'; return 1
 	fi
-	json=$(ubus call umdns browse 2>/dev/null) || { echo 'metadata: browse failed'; return 1; }
-	# Prefer versioned service; fallback to legacy if versioned absent.
-	service_key="_nrsyncd_v1._udp"; echo "$json" | grep -q '_nrsyncd_v1._udp' || service_key="_rrm_nr._udp"
-	# Extract TXT array length and elements.
-	len=$(echo "$json" | jsonfilter -e "@['$service_key'][0].txt | length(@)" 2>/dev/null || echo 0)
-	[ "$len" = "0" ] && { echo 'metadata: no TXT entries found'; return 1; }
-	# Collect tokens (space separated); jsonfilter may output one per line; collapse.
-	tokens=$(echo "$json" | jsonfilter -e "@['$service_key'][0].txt[*]")
-	# Classify tokens.
-	ssid_tokens=""; meta_v=""; meta_c=""; meta_h=""; total=0; sample=""; sample_limit=4
-	    for t in $tokens; do
+
+	# Helper: try to extract TXT items for a given selector; prints items one per line
+	extract_txt() {
+		sel="$1"; src="$2" # sel: jsonfilter selector, src: announcements|browse
+		case "$src" in
+			announcements) ubus call umdns announcements 2>/dev/null | jsonfilter -e "$sel" 2>/dev/null ;;
+			browse)        ubus call umdns browse 2>/dev/null | jsonfilter -e "$sel" 2>/dev/null ;;
+		esac
+	}
+
+	# Try in this order:
+	# 1) announcements for versioned key (.local suffix)
+	# 2) browse for versioned key (no suffix)
+	# 3) announcements for legacy key
+	# 4) browse for legacy key
+	txt_lines=$(extract_txt "@['_nrsyncd_v1._udp.local'][*].txt[*]" announcements)
+	[ -z "$txt_lines" ] && txt_lines=$(extract_txt "@['_nrsyncd_v1._udp'][*].txt[*]" browse)
+	[ -z "$txt_lines" ] && txt_lines=$(extract_txt "@['_rrm_nr._udp.local'][*].txt[*]" announcements)
+	[ -z "$txt_lines" ] && txt_lines=$(extract_txt "@['_rrm_nr._udp'][*].txt[*]" browse)
+
+	if [ -z "$txt_lines" ]; then
+		echo 'metadata: no TXT entries found'
+		return 1
+	fi
+
+	ssid_count=0; total=0; sample=""; sample_limit=4; meta_v=""; meta_c=""; meta_h=""; sample_added=0
+	# Read each TXT item as a full line to preserve spaces within SSID arrays
+	echo "$txt_lines" | while IFS= read -r t; do
+		[ -z "$t" ] && continue
 		total=$((total+1))
 		case "$t" in
-	            SSID[0-9]*=*) ssid_tokens="$ssid_tokens $t"; if [ "$(echo "$ssid_tokens" | wc -w)" -le "$sample_limit" ]; then sample="$sample${sample:+ }$t"; fi ;;
+			SSID[0-9]*=*)
+				ssid_count=$((ssid_count+1))
+				if [ $sample_added -lt $sample_limit ]; then
+					if [ -n "$sample" ]; then sample="$sample $t"; else sample="$t"; fi
+					sample_added=$((sample_added+1))
+				fi
+				;;
 			v=*) meta_v=${t#v=} ;;
 			c=*) meta_c=${t#c=} ;;
 			h=*) meta_h=${t#h=} ;;
 		esac
 	done
-	ssid_count=$(echo "$ssid_tokens" | wc -w | tr -d ' ')
-	[ -z "$sample" ] && sample=none
-	printf 'metadata: version=%s count=%s hash=%s ssids=%s sample="%s" raw_tokens=%s\n' "${meta_v:-?}" "${meta_c:-?}" "${meta_h:-?}" "$ssid_count" "$sample" "$total"
+
+	# The while in a subshell won’t update outer vars on some shells; recompute minimally for reporting.
+	# Derive version/count/hash from txt_lines again (single-pass awk to avoid subshell var loss)
+	report=$(echo "$txt_lines" | awk '
+		BEGIN{v="";c="";h="";ss=0;total=0;sample_count=0;sample_limit=4;sample=""}
+		{line=$0; if(line ~ /^SSID[0-9]+=/){ ss++; if(sample_count<sample_limit){ if(sample!=""){sample=sample" "line}else{sample=line}; sample_count++ } } else if(line ~ /^v=/){ sub(/^v=/, "", line); v=line } else if(line ~ /^c=/){ sub(/^c=/, "", line); c=line } else if(line ~ /^h=/){ sub(/^h=/, "", line); h=line } total++ }
+		END{ if(sample=="") sample="none"; printf("%s\n%s\n%s\n%s\n%s\n", v, c, h, ss, sample) }')
+	meta_v=$(echo "$report" | sed -n '1p')
+	meta_c=$(echo "$report" | sed -n '2p')
+	meta_h=$(echo "$report" | sed -n '3p')
+	ssid_count=$(echo "$report" | sed -n '4p')
+	sample=$(echo "$report" | sed -n '5p')
+	total=$(echo "$txt_lines" | wc -l | tr -d ' ')
+
+	printf 'metadata: version=%s count=%s hash=%s ssids=%s sample="%s" raw_tokens=%s\n' "${meta_v:-?}" "${meta_c:-?}" "${meta_h:-?}" "${ssid_count:-0}" "$sample" "$total"
 }

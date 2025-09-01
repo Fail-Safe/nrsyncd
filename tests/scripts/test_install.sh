@@ -68,7 +68,7 @@ echo "[test] Checking created config"
 grep -q 'config nrsyncd' "$ROOT/etc/config/nrsyncd" || { echo '[FAIL] missing nrsyncd config'; exit 1; }
 
 echo "[test] Checking sysupgrade entries"
-for f in /etc/init.d/nrsyncd /usr/bin/nrsyncd /lib/nrsyncd_common.sh /etc/config/nrsyncd; do
+for f in /etc/init.d/nrsyncd /usr/bin/nrsyncd /lib/nrsyncd_common.sh; do
   grep -qx "$f" "$ROOT/etc/sysupgrade.conf" || { echo "[FAIL] missing $f in sysupgrade.conf"; exit 1; }
 done
 

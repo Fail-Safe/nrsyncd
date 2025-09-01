@@ -22,10 +22,15 @@ FAIL=0
 for f in $SCRIPTS; do
   [ -f "$f" ] || continue
   # SC1090 dynamic sourced files are intentional in tests; disable.
+  # Suppress non-actionable infos and a couple of benign warnings in tests/binaries:
+  #  - SC1091: "Not following" includes OpenWrt rc.common and test env files
+  #  - SC2034: some test vars are intentionally exported/unused
+  #  - SC2329: prebuilt daemon stubs show as unused in static analysis
+  # Also raise minimum severity to 'warning' to ignore style-only infos.
   if [ $FIX -eq 1 ]; then
-    shellcheck -x -e SC1090 "$f" || FAIL=1
+    shellcheck -S warning -x -e SC1090 -e SC1091 -e SC2034 -e SC2329 "$f" || FAIL=1
   else
-    shellcheck -x -e SC1090 "$f" || FAIL=1
+    shellcheck -S warning -x -e SC1090 -e SC1091 -e SC2034 -e SC2329 "$f" || FAIL=1
   fi
 done
 
