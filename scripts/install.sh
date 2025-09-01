@@ -26,6 +26,8 @@ DEPS_MODE="prompt"       # prompt | yes | no
 INSTALL_OPTIONAL=0       # install optional deps automatically
 FIX_WIRELESS=0           # auto-add missing ieee80211k/bss_transition
 AUTO_MIGRATE_LEGACY=0    # auto-run migration script if legacy rrm_nr config present (live system only, no --prefix)
+CLEANUP_LEGACY=0         # after install, remove legacy rrm_nr init/bin/lib (live system)
+CLEANUP_LEGACY_FORCE=0   # also remove legacy rrm_nr config (passes --force to cleanup)
 
 # Remote install orchestrator (executes this script over SSH on target)
 REMOTE_HOSTS=""          # space separated list (user@host or host) may be built from comma list(s)
@@ -76,7 +78,11 @@ while [ $# -gt 0 ]; do
     --status-wait)
       STATUS_WAIT=$2; shift 2 ;;
     --auto-migrate-legacy)
-      AUTO_MIGRATE_LEGACY=1; shift ;;
+  AUTO_MIGRATE_LEGACY=1; PASS_ARGS="$PASS_ARGS --auto-migrate-legacy"; shift ;;
+    --cleanup-legacy)
+      CLEANUP_LEGACY=1; PASS_ARGS="$PASS_ARGS --cleanup-legacy"; shift ;;
+    --cleanup-legacy-force)
+      CLEANUP_LEGACY=1; CLEANUP_LEGACY_FORCE=1; PASS_ARGS="$PASS_ARGS --cleanup-legacy-force"; shift ;;
     -h|--help)
       cat <<EOF
 Install nrsyncd distributor files.
@@ -98,6 +104,8 @@ Options:
   --fix-wireless       Auto-add missing ieee80211k '1' / bss_transition '1' to active wifi-iface stanzas.
   --status-wait <sec>  After starting service, poll up to <sec> seconds for runtime status file.
   --auto-migrate-legacy  If legacy rrm_nr config/service present and no nrsyncd config yet (live system), run migration script automatically.
+  --cleanup-legacy      After install, remove legacy rrm_nr init/bin/lib from the live system.
+  --cleanup-legacy-force  Also remove legacy /etc/config/rrm_nr (implies --cleanup-legacy).
   -h, --help           Show this help.
 Notes:
 - On a live system (no --prefix), if legacy rrm_nr is detected and no /etc/config/nrsyncd exists, this installer now aborts to avoid a mixed state. Re-run with --auto-migrate-legacy or run scripts/migrate_from_rrm_nr.sh manually, then re-run install.
@@ -124,6 +132,11 @@ if [ -n "$REMOTE_HOSTS" ]; then
   # Normalize whitespace
   set -- "$REMOTE_HOSTS"
   REMOTE_HOSTS="$*"
+  # De-duplicate hosts while preserving order
+  if [ -n "$REMOTE_HOSTS" ]; then
+    # Print one host per line, drop repeats, then rejoin to spaces
+    REMOTE_HOSTS=$(printf '%s\n' $REMOTE_HOSTS | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/[[:space:]]\+$//')
+  fi
   FILE_LIST="service/nrsyncd.init bin/nrsyncd lib/nrsyncd_common.sh scripts/install.sh scripts/migrate_from_rrm_nr.sh config/nrsyncd.config"
   MANIFEST_NAME="nrsyncd_manifest.sha256"
   MANIFEST_PATH="$REPO_ROOT/$MANIFEST_NAME"
@@ -498,6 +511,17 @@ if [ "$START_SERVICE" -eq 1 ]; then
   fi
 else
   echo "[nrsyncd] Skipped service enable/start (--no-start given)"
+fi
+
+# Optional legacy cleanup on live systems (not for prefix roots)
+if [ -z "$PREFIX" ] && [ $CLEANUP_LEGACY -eq 1 ]; then
+  if [ -f "$REPO_ROOT/scripts/migrate_from_rrm_nr.sh" ]; then
+    args="--remove-old"
+    [ $CLEANUP_LEGACY_FORCE -eq 1 ] && args="$args --force"
+    sh "$REPO_ROOT/scripts/migrate_from_rrm_nr.sh" $args || echo "[nrsyncd] WARNING: legacy cleanup encountered an issue" >&2
+  else
+    echo "[nrsyncd] WARNING: legacy cleanup requested but migration script not found" >&2
+  fi
 fi
 
 if [ "$ADD_SYSUPGRADE" -eq 1 ]; then

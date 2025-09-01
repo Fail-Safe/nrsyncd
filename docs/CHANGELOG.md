@@ -2,6 +2,18 @@
 
 All notable changes will be documented here. Dates use UTC.
 
+## [1.0.2] - 2025-09-01
+
+### Added
+
+- Installer: `--cleanup-legacy` and `--cleanup-legacy-force` flags to remove legacy `rrm_nr` artifacts after install (`--cleanup-legacy-force` also removes legacy config, gated by `--force`).
+
+### Changed
+
+- Installer (remote): forward `--auto-migrate-legacy` to the remote side and de‑duplicate repeated hosts (order preserved).
+
+---
+
 ## [1.0.1] - 2025-09-01
 
 ### Fixed
