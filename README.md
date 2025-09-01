@@ -141,6 +141,8 @@ Options:
  - `--install-optional` install high‑resolution sleep helper (coreutils-sleep or coreutils)
  - `--fix-wireless` auto-enable missing 802.11k / BSS transition options
  - `--auto-migrate-legacy` if legacy `rrm_nr` is detected on a live system, migrate it automatically instead of aborting
+ - `--cleanup-legacy` after install, remove legacy `rrm_nr` init/bin/lib from the live system
+ - `--cleanup-legacy-force` also remove legacy `/etc/config/rrm_nr` (implies `--cleanup-legacy`)
 
 ### Remote Install From Your Workstation 📡
 
@@ -198,8 +200,9 @@ Notes:
 - Retry logic: Each host retried up to `--remote-retries` times; delay sequence = base, base*2, base*4, ... using `--remote-backoff` as the starting seconds.
 - Dry-run still generates a manifest locally then removes it (no remote connections made).
 - Missing optional files are noted but not fatal.
-- Failures leave the staging directory intact for that host (unless missing connectivity precluded creation).
- - Legacy note: remote installs will also abort on legacy `rrm_nr` unless `--auto-migrate-legacy` is included in the forwarded flags.
+ - Failures leave the staging directory intact for that host (unless missing connectivity precluded creation).
+ - Legacy note: remote installs will also abort on legacy `rrm_nr` unless `--auto-migrate-legacy` is included; you can also add `--cleanup-legacy` or `--cleanup-legacy-force` to remove legacy files/config after install.
+ - Duplicate hosts listed in `--remote` are de‑duplicated automatically (order preserved).
 
 ### 2. Manual Copy (Minimalistic) 📠
 
