@@ -16,43 +16,52 @@ SCENARIO="$SCENARIO_DIR/basic"
 export SCENARIO
 load_scenario || exit 1
 
-# Build OUT solely from mocks (announcements preferred, browse fallback)
+# Prepend mocks
 PATH="$MOCK_DIR:$PATH"; export PATH
-TXT=$(ubus call umdns announcements 2>/dev/null | jsonfilter -e '@["_nrsyncd_v1._udp.local"][*].txt[*]' 2>/dev/null)
+
+# Helper: extract TXT lines (announcements preferred; then versioned browse; then legacy)
+get_txt() {
+	txt=$(ubus call umdns announcements 2>/dev/null | jsonfilter -e '@["_nrsyncd_v1._udp.local"][*].txt[*]' 2>/dev/null || true)
+	[ -z "$txt" ] && txt=$(ubus call umdns browse 2>/dev/null | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]' 2>/dev/null || true)
+	[ -z "$txt" ] && txt=$(ubus call umdns announcements 2>/dev/null | jsonfilter -e '@["_rrm_nr._udp.local"][*].txt[*]' 2>/dev/null || true)
+	[ -z "$txt" ] && txt=$(ubus call umdns browse 2>/dev/null | jsonfilter -e '@["_rrm_nr._udp"][*].txt[*]' 2>/dev/null || true)
+	printf '%s' "$txt"
+}
+
+# Helper: build metadata OUT line from TXT on stdin
+build_out_from_txt() {
+	# Read all stdin into a variable safely
+	txt_in=$(cat)
+	v=$(printf '%s\n' "$txt_in" | sed -n 's/^v=//p' | head -n1)
+	c=$(printf '%s\n' "$txt_in" | sed -n 's/^c=//p' | head -n1)
+	h=$(printf '%s\n' "$txt_in" | sed -n 's/^h=//p' | head -n1)
+	ss=$(printf '%s\n' "$txt_in" | grep -E '^SSID[0-9]+=' || true)
+	ss_count=$(printf '%s\n' "$ss" | grep -c '^' 2>/dev/null || echo 0)
+	sample=$(printf '%s\n' "$ss" | head -n 3 | tr '\n' ' ' | sed 's/[ ]$//')
+	total=$(printf '%s\n' "$txt_in" | grep -c '^' 2>/dev/null || echo 0)
+	printf 'metadata: version=%s count=%s hash=%s ssids=%s sample="%s" raw_tokens=%s\n' "${v:-?}" "${c:-?}" "${h:-?}" "${ss_count:-0}" "$sample" "$total"
+}
+
 INIT_SCRIPT="$BASE_DIR/service/nrsyncd.init"
 OUT=$("$BASE_DIR/tests/scripts/metadata_shim.sh" "$INIT_SCRIPT" 2>/dev/null || true)
 
-# If shim produced nothing, build OUT from mocks (announcements preferred, browse fallback)
+# Always collect TXT (for logs and possible fallback)
+TXT=$(get_txt)
+if [ -z "$TXT" ]; then
+	echo "[metadata] TXT lines: (empty)" >&2
+else
+	echo "[metadata] TXT lines:" >&2
+	printf '%s\n' "$TXT" | sed 's/^/[metadata]   /' >&2
+fi
+
+# If shim failed to produce a proper line, synthesize OUT from TXT
 if [ -z "$OUT" ] || ! printf '%s' "$OUT" | grep -q '^metadata: '; then
-	PATH="$MOCK_DIR:$PATH"; export PATH
-	TXT=$(ubus call umdns announcements 2>/dev/null | jsonfilter -e '@["_nrsyncd_v1._udp.local"][*].txt[*]' 2>/dev/null)
-	[ -z "$TXT" ] && TXT=$(ubus call umdns browse 2>/dev/null | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]' 2>/dev/null)
-	[ -z "$TXT" ] && TXT=$(ubus call umdns announcements 2>/dev/null | jsonfilter -e '@["_rrm_nr._udp.local"][*].txt[*]' 2>/dev/null)
-	[ -z "$TXT" ] && TXT=$(ubus call umdns browse 2>/dev/null | jsonfilter -e '@["_rrm_nr._udp"][*].txt[*]' 2>/dev/null)
 	if [ -z "$TXT" ]; then
-		echo "[metadata] TXT lines: (empty)" >&2
 		echo "metadata scenario: no TXT extracted from mocks" >&2
 		exit 1
 	fi
-	echo "[metadata] TXT lines:" >&2
-	printf '%s\n' "$TXT" | sed 's/^/[metadata]   /' >&2
-	v=$(printf '%s\n' "$TXT" | sed -n 's/^v=//p' | head -n1)
-	c=$(printf '%s\n' "$TXT" | sed -n 's/^c=//p' | head -n1)
-	h=$(printf '%s\n' "$TXT" | sed -n 's/^h=//p' | head -n1)
-	ss=$(printf '%s\n' "$TXT" | grep -E '^SSID[0-9]+=')
-	ss_count=$(printf '%s\n' "$ss" | grep -c '^' || echo 0)
-	sample=$(printf '%s\n' "$ss" | head -n 3 | tr '\n' ' ' | sed 's/[ ]$//')
-	OUT=$(printf 'metadata: version=%s count=%s hash=%s ssids=%s sample="%s" raw_tokens=%s\n' "${v:-?}" "${c:-?}" "${h:-?}" "${ss_count:-0}" "$sample" "$(printf '%s\n' "$TXT" | grep -c '^' || echo 0)")
+	OUT=$(printf '%s' "$TXT" | build_out_from_txt)
 fi
-echo "[metadata] TXT lines:" >&2
-printf '%s\n' "$TXT" | sed 's/^/[metadata]   /' >&2
-v=$(printf '%s\n' "$TXT" | sed -n 's/^v=//p' | head -n1)
-c=$(printf '%s\n' "$TXT" | sed -n 's/^c=//p' | head -n1)
-h=$(printf '%s\n' "$TXT" | sed -n 's/^h=//p' | head -n1)
-ss=$(printf '%s\n' "$TXT" | grep -E '^SSID[0-9]+=')
-ss_count=$(printf '%s\n' "$ss" | grep -c '^' || echo 0)
-sample=$(printf '%s\n' "$ss" | head -n 3 | tr '\n' ' ' | sed 's/[ ]$//')
-OUT=$(printf 'metadata: version=%s count=%s hash=%s ssids=%s sample="%s" raw_tokens=%s\n' "${v:-?}" "${c:-?}" "${h:-?}" "${ss_count:-0}" "$sample" "$(printf '%s\n' "$TXT" | grep -c '^' || echo 0)")
 
 echo "[metadata] Output: $OUT" >&2
 
