@@ -224,6 +224,8 @@ start_service() {
 	if command -v ubus >/dev/null 2>&1; then
 		# Use jsonfilter defensively only if present.
 		if command -v jsonfilter >/dev/null 2>&1; then
+			# Defensive parser: some jsonfilter variants/mocks can emit TXT arrays split elements.
+			# We only need counts here; if parsing fails treat as zero to avoid hard-fail.
 			primary_count=$(ubus call umdns browse 2>/dev/null | jsonfilter -l1 -e '@["_nrsyncd_v1._udp"] | length(@)' 2>/dev/null || echo 0)
 			legacy_count=$(ubus call umdns browse 2>/dev/null | jsonfilter -l1 -e '@["_rrm_nr._udp"] | length(@)' 2>/dev/null || echo 0)
 			# Warn only if legacy exists but primary absent.

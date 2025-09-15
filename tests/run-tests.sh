@@ -16,4 +16,7 @@ export STATE_DIR
 "$DIR/scripts/scenario_reload.sh"
 "$DIR/scripts/scenario_metadata.sh"
 
-echo "All scenarios: PASS"
+# Overlay feature not yet active; placeholder keeps future wiring visible.
+"$DIR/scripts/scenario_overlay_placeholder.sh"
+
+echo "All scenarios (with placeholder): PASS"
