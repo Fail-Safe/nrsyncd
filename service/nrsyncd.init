@@ -547,8 +547,19 @@ metadata_service() {
 	[ -z "$txt_lines" ] && txt_lines=$(extract_txt "@['_rrm_nr._udp'][*].txt[*]" browse)
 
 	if [ -z "$txt_lines" ]; then
-		echo 'metadata: no TXT entries found'
-		return 1
+		# Attempt raw fallback: scan raw browse JSON for quoted SSIDn=/v=/c=/h= tokens.
+		# This handles cases where jsonfilter selector syntax diverges across versions or
+		# mocks produce slightly different shapes.
+		raw_json=$(ubus call umdns browse 2>/dev/null || true)
+		if [ -n "$raw_json" ]; then
+			# Extract tokens inside quotes beginning with SSIDn= or metadata keys.
+			# Use awk to avoid excessive grep/sed pipelines; strip trailing punctuation.
+			txt_lines=$(printf '%s' "$raw_json" | awk 'match($0, /"SSID[0-9]+=[^"]+"/){ print substr($0, RSTART+1, RLENGTH-2) } match($0, /"v=1"/){ print "v=1" } match($0, /"c=[0-9]+"/){ m=substr($0, RSTART+1, RLENGTH-2); print m } match($0, /"h=[0-9a-fA-F]+"/){ m=substr($0, RSTART+1, RLENGTH-2); print m }')
+		fi
+		if [ -z "$txt_lines" ]; then
+			echo 'metadata: no TXT entries found'
+			return 1
+		fi
 	fi
 
 	ssid_count=0; total=0; sample=""; sample_limit=4; meta_v=""; meta_c=""; meta_h=""; sample_added=0
@@ -582,6 +593,23 @@ metadata_service() {
 	ssid_count=$(echo "$report" | sed -n '4p')
 	sample=$(echo "$report" | sed -n '5p')
 	total=$(echo "$txt_lines" | wc -l | tr -d ' ')
+
+
+	# Reconcile: if advertised count mismatches parsed SSID count, prefer parsed value for reporting
+	# but keep original in a warning to stderr for operator awareness (non-fatal).
+	orig_meta_c=$meta_c
+	if [ -n "$meta_c" ] && [ -n "$ssid_count" ] && [ "$meta_c" != "$ssid_count" ]; then
+		# Emit a concise warning (debug style tag kept consistent)
+		logger -t "${NAME}" -p daemon.warning "metadata count mismatch (c=$meta_c parsed=$ssid_count)"
+		meta_c=$ssid_count
+	fi
+
+	# Ensure basic sanitation: limit sample length to avoid pathological huge output
+	# (already capped by sample_limit but double guard for future edits)
+	case ${#sample} in
+		[0-2][0-9][0-9]) : ;; # up to 299 chars fine
+		*) sample=$(printf '%s' "$sample" | cut -c1-300) ;; # truncate conservatively
+	 esac
 
 	printf 'metadata: version=%s count=%s hash=%s ssids=%s sample="%s" raw_tokens=%s\n' "${meta_v:-?}" "${meta_c:-?}" "${meta_h:-?}" "${ssid_count:-0}" "$sample" "$total"
 }
