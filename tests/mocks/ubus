@@ -36,7 +36,23 @@ case $CMD in
         ;;
       browse)
         if [ "$OBJ" = "umdns" ]; then
-          cat "$SCENARIO/umdns.browse" 2>/dev/null
+          if [ -f "$SCENARIO/umdns.browse" ]; then
+            content=$(cat "$SCENARIO/umdns.browse")
+            # Detect overlay flag (mock UCI config) only if state file present
+            overlay_flag=0
+            if [ -n "$STATE_DIR" ] && grep -q '^nrsyncd.global.activity_overlay=1' "$STATE_DIR/uci.conf" 2>/dev/null; then
+              overlay_flag=1
+            fi
+            if [ $overlay_flag -eq 1 ]; then
+              # Only mutate if placeholders not already present to remain idempotent.
+              echo "$content" | grep -q '"a=<none>"' || {
+                content=$(printf '%s' "$content" \
+                  | sed -e 's/"v=1"/"v=2"/' \
+                        -e 's/"h=\([^"]*\)"/"h=\1","a=<none>","i=<none>"/')
+              }
+            fi
+            printf '%s' "$content"
+          fi
         fi
         ;;
       announcements)
@@ -45,7 +61,20 @@ case $CMD in
           # Transform the browse JSON into announcements shape by adding .local suffix
           # for simplicity we just replace the key string.
           if [ -f "$SCENARIO/umdns.browse" ]; then
-            sed 's/"_nrsyncd_v1._udp"/"_nrsyncd_v1._udp.local"/g; s/"_rrm_nr._udp"/"_rrm_nr._udp.local"/g' "$SCENARIO/umdns.browse"
+            content=$(sed 's/"_nrsyncd_v1._udp"/"_nrsyncd_v1._udp.local"/g; s/"_rrm_nr._udp"/"_rrm_nr._udp.local"/g' "$SCENARIO/umdns.browse")
+            # Detect overlay flag (reuse logic for browse path)
+            overlay_flag=0
+            if [ -n "$STATE_DIR" ] && grep -q '^nrsyncd.global.activity_overlay=1' "$STATE_DIR/uci.conf" 2>/dev/null; then
+              overlay_flag=1
+            fi
+            if [ $overlay_flag -eq 1 ]; then
+              echo "$content" | grep -q '"a=<none>"' || {
+                content=$(printf '%s' "$content" \
+                  | sed -e 's/"v=1"/"v=2"/' \
+                        -e 's/"h=\([^"]*\)"/"h=\1","a=<none>","i=<none>"/')
+              }
+            fi
+            printf '%s' "$content"
           fi
         fi
         ;;
