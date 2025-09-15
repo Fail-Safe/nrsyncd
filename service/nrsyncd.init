@@ -28,6 +28,7 @@ CFG_SKIP_IFACES=""
 CFG_ENABLED=1
 CFG_QUICK_MAX_MS=2000
 CFG_SECOND_PASS_MS=800
+CFG_ACTIVITY_OVERLAY=0
 
 append_skip_iface() {
 	val="$1"
@@ -45,6 +46,7 @@ load_nrsyncd_config() {
 	config_get CFG_UMDNS_SETTLE_DELAY global umdns_settle_delay 0
 	config_get CFG_QUICK_MAX_MS global quick_max_ms 2000
 	config_get CFG_SECOND_PASS_MS global second_pass_ms 800
+	config_get CFG_ACTIVITY_OVERLAY global activity_overlay 0
 
 	# Sanitize numeric bounds for advanced readiness knobs
 	case "$CFG_QUICK_MAX_MS" in ''|*[!0-9]* ) CFG_QUICK_MAX_MS=2000 ;; esac; [ "$CFG_QUICK_MAX_MS" -gt 5000 ] && CFG_QUICK_MAX_MS=5000
@@ -117,6 +119,7 @@ start_service() {
 	NRSYNCD_DEBUG=$CFG_DEBUG
 	NRSYNCD_UMDNS_REFRESH_INTERVAL=$CFG_UMDNS_REFRESH_INTERVAL
 	NRSYNCD_UMDNS_SETTLE_DELAY=$CFG_UMDNS_SETTLE_DELAY
+    NRSYNCD_ACTIVITY_OVERLAY=$CFG_ACTIVITY_OVERLAY
 
 	# Backward compatibility: export legacy RRM_NR_* names so existing binary builds
 	# (still expecting old env names) continue functioning. Can be removed after
@@ -126,6 +129,7 @@ start_service() {
 	RRM_NR_DEBUG=$NRSYNCD_DEBUG
 	RRM_NR_UMDNS_REFRESH_INTERVAL=$NRSYNCD_UMDNS_REFRESH_INTERVAL
 	RRM_NR_UMDNS_SETTLE_DELAY=$NRSYNCD_UMDNS_SETTLE_DELAY
+    RRM_NR_ACTIVITY_OVERLAY=$NRSYNCD_ACTIVITY_OVERLAY
 	skip_ifaces=$CFG_SKIP_IFACES
 
 	# Warn if any configured skip_iface entries don't match a current hostapd object
@@ -245,6 +249,7 @@ start_service() {
 			NRSYNCD_DEBUG="$NRSYNCD_DEBUG" \
 			NRSYNCD_UMDNS_REFRESH_INTERVAL="$NRSYNCD_UMDNS_REFRESH_INTERVAL" \
 			NRSYNCD_UMDNS_SETTLE_DELAY="$NRSYNCD_UMDNS_SETTLE_DELAY" \
+			NRSYNCD_ACTIVITY_OVERLAY="$NRSYNCD_ACTIVITY_OVERLAY" \
 			NRSYNCD_SKIP_IFACES="$skip_ifaces" \
 			NRSYNCD_QUICK_MAX_MS="$QUICK_MAX_MS" \
 			NRSYNCD_SECOND_PASS_MS="$SECOND_PASS_MS" \
@@ -253,6 +258,7 @@ start_service() {
 			RRM_NR_DEBUG="$RRM_NR_DEBUG" \
 			RRM_NR_UMDNS_REFRESH_INTERVAL="$RRM_NR_UMDNS_REFRESH_INTERVAL" \
 			RRM_NR_UMDNS_SETTLE_DELAY="$RRM_NR_UMDNS_SETTLE_DELAY" \
+			RRM_NR_ACTIVITY_OVERLAY="$RRM_NR_ACTIVITY_OVERLAY" \
 			RRM_NR_SKIP_IFACES="$skip_ifaces" \
 			RRM_NR_QUICK_MAX_MS="$QUICK_MAX_MS" \
 			RRM_NR_SECOND_PASS_MS="$SECOND_PASS_MS"
