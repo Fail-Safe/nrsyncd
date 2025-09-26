@@ -1,0 +1,262 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# nrsyncd broadcast helper: proactively send small heartbeat/status frames
+# to peers discovered via mDNS/DNS-SD TXT sc=proto:port. Optional loopback
+# mode for tests delivers frames to local ingest without networking.
+
+set -eu
+
+SC_DEBUG=${NRSYNCD_SC_DEBUG:-0}
+STATE_DIR=${NRSYNCD_SC_STATE_DIR:-/tmp/nrsyncd_state}
+PSK=${NRSYNCD_SC_PSK:-}
+PROTO_DEFAULT=${NRSYNCD_SC_PROTO:-udp}
+BCAST_INTERVAL=${NRSYNCD_SC_BCAST_INTERVAL:-60}
+BCAST_JITTER=${NRSYNCD_SC_BCAST_JITTER:-10}
+LOOPBACK=${NRSYNCD_SC_BCAST_LOOPBACK:-0}
+# Test helper: if enabled, still perform discovery & self-filtering but deliver
+# frames via direct sidechannel ingest (no network dependency). Distinct from
+# LOOPBACK which bypasses discovery entirely.
+DIRECT_INGEST=${NRSYNCD_SC_BCAST_DIRECT_INGEST:-0}
+
+# Allow tests to override self id deterministically
+if [ -n "${NRSYNCD_SC_SELF_ID:-}" ]; then
+	SELF_ID=$NRSYNCD_SC_SELF_ID
+else
+	_hn=$(cat /proc/sys/kernel/hostname 2>/dev/null || hostname 2>/dev/null || echo unknown)
+	SELF_ID=$(printf '%s' "$_hn")
+fi
+# Lowercased variant for comparisons
+SELF_ID_LC=$(printf '%s' "$SELF_ID" | tr 'A-Z' 'a-z')
+# Receiver normalizes to lowercase filenames; payload keeps original case
+
+log() { logger -t nrsyncd_sc_bcast -p daemon.info -- "$*"; }
+debug() { [ "$SC_DEBUG" = "1" ] && logger -t nrsyncd_sc_bcast -p daemon.debug -- "$*" || true; }
+
+rand_jitter() {
+	# Compute a pseudo-random 0..BCAST_JITTER value using time+pid hashed
+	j=${BCAST_JITTER:-0}
+	case "$j" in '' | *[!0-9]*) j=0 ;; esac
+	[ "$j" -le 0 ] && {
+		echo 0
+		return
+	}
+	seed="$(date +%s 2>/dev/null || echo 0).$$"
+	if command -v md5sum >/dev/null 2>&1; then
+		h=$(printf '%s' "$seed" | md5sum | awk '{print $1}')
+		# Take last 4 hex digits -> int
+		v=$((0x${h#${h%????}}))
+	else
+		v=$(printf '%s' "$seed" | od -An -tu2 | tr -d ' ' | head -n1)
+		v=${v:-0}
+	fi
+	echo $((v % (j + 1)))
+}
+
+build_base_ts() { date +%s 2>/dev/null || echo 0; }
+
+# Get self IPv4 addresses (best-effort). Output: space-separated list
+get_self_ips() {
+	ips=""
+	if command -v ip >/dev/null 2>&1; then
+		ips=$(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | tr '\n' ' ')
+	elif command -v ifconfig >/dev/null 2>&1; then
+		ips=$(ifconfig 2>/dev/null | awk '/inet /{print $2} /inet addr:/{sub("addr:","",$2); print $2}' | tr '\n' ' ')
+	fi
+	echo "$ips"
+}
+
+# Return 0 (true) if the pair looks like self (avoid sending to self)
+is_self_target() {
+	host="$1"
+	inst="$2"
+	inst_lc=$(printf '%s' "$inst" | tr 'A-Z' 'a-z')
+	case "$host" in 127.0.0.1 | ::1 | localhost) return 0 ;; esac
+	[ -n "$inst_lc" ] && [ "$inst_lc" = "$SELF_ID_LC" ] && return 0
+	for ipx in $SELF_IPS; do [ "$host" = "$ipx" ] && return 0; done
+	return 1
+}
+
+# Send one payload to a single target
+send_payload() {
+	host="$1"
+	proto="$2"
+	port="$3"
+	data="$4"
+	if [ "$LOOPBACK" = "1" ]; then
+		if sc_bin=$(command -v nrsyncd_sidechannel 2>/dev/null); then :; else sc_bin="/usr/bin/nrsyncd_sidechannel"; fi
+		if [ -x "$sc_bin" ]; then
+			printf '%s' "$data" | "$sc_bin" --ingest
+			mkdir -p "$STATE_DIR" 2>/dev/null || true
+			echo "loopback_sent" >"$STATE_DIR/.bcast_marker" 2>/dev/null || true
+			return 0
+		fi
+		debug "loopback enabled but nrsyncd_sidechannel not found; skip"
+		return 0
+	fi
+	case "$proto" in
+	udp)
+		if command -v socat >/dev/null 2>&1; then
+			printf '%s' "$data" | socat -u - UDP-SENDTO:"$host":$port,so-broadcast=0
+			return 0
+		elif command -v ncat >/dev/null 2>&1; then
+			printf '%s' "$data" | ncat --udp "$host" "$port"
+			return 0
+		elif command -v nc >/dev/null 2>&1; then
+			printf '%s' "$data" | nc -u -w 1 "$host" "$port"
+			return 0
+		fi
+		;;
+	tcp)
+		if command -v socat >/dev/null 2>&1; then
+			printf '%s' "$data" | socat - TCP:"$host":$port,connect-timeout=2
+			return 0
+		elif command -v ncat >/dev/null 2>&1; then
+			printf '%s' "$data" | ncat "$host" "$port"
+			return 0
+		elif command -v nc >/dev/null 2>&1; then
+			printf '%s' "$data" | nc -w 1 "$host" "$port"
+			return 0
+		fi
+		;;
+	esac
+	debug "no sender backend for $proto; host=$host port=$port"
+	return 1
+}
+
+# Extract peers as lines: host|proto:port|instance
+discover_peers() {
+	if command -v jsonfilter >/dev/null 2>&1; then
+		for mode in browse announcements; do
+			key="_nrsyncd_v1._udp"
+			[ "$mode" = announcements ] && key="${key}.local"
+			json=$(ubus call umdns "$mode" 2>/dev/null || true)
+			[ -n "$json" ] || continue
+			count=$(printf '%s' "$json" | jsonfilter -l1 -e "@['$key'] | length(@)" 2>/dev/null || echo 0)
+			case "$count" in '' | *[!0-9]*) count=0 ;; esac
+			i=0
+			while [ $i -lt $count ]; do
+				sc=$(printf '%s' "$json" | jsonfilter -e "@['$key'][$i].txt[*]" 2>/dev/null | awk -F= '/^sc=/{print $2; exit}')
+				[ -z "$sc" ] && {
+					i=$((i + 1))
+					continue
+				}
+				host=$(printf '%s' "$json" | jsonfilter -e "@['$key'][$i].ipv4[0]" 2>/dev/null | tr -d '"')
+				inst=$(printf '%s' "$json" | jsonfilter -e "@['$key'][$i].hostname" 2>/dev/null)
+				[ -z "$inst" ] && inst=$(printf '%s' "$json" | jsonfilter -e "@['$key'][$i].name" 2>/dev/null)
+				printf '%s|%s|%s\n' "$host" "$sc" "$inst"
+				i=$((i + 1))
+			done
+			# do not early return; allow fallback mode to add more entries if present
+		done
+	fi
+	json="$(ubus call umdns announcements 2>/dev/null || ubus call umdns browse 2>/dev/null || true)"
+	[ -z "$json" ] && return 0
+	# Fallback very small JSON scanner: find service objects containing sc=
+	# Strategy: split objects on '}],' then pull ipv4, hostname/name, and sc token.
+	printf '%s' "$json" | tr '\n' ' ' | sed 's/},{/}\n{/g' | while IFS= read -r obj; do
+		printf '%s' "$obj" | grep -q '"sc=[a-z]*:[0-9][0-9]*"' || continue
+		host=$(printf '%s' "$obj" | sed -n 's/.*"ipv4"[ ]*:[ ]*\[[^]]*"\([0-9.]*\)".*/\1/p' | head -n1)
+		inst=$(printf '%s' "$obj" | sed -n 's/.*"hostname"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -n1)
+		[ -z "$inst" ] && inst=$(printf '%s' "$obj" | sed -n 's/.*"name"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -n1)
+		sc=$(printf '%s' "$obj" | sed -n 's/.*"sc=\([a-z]*:[0-9][0-9]*\)".*/\1/p' | head -n1)
+		[ -n "$sc" ] && printf '%s|%s|%s\n' "$host" "$sc" "$inst"
+	done
+}
+
+one_cycle() {
+	ts_cycle=$(build_base_ts)
+	count=0
+	# Track seen host|sc pairs to avoid duplicate sends when a record appears
+	# in both announcements and browse outputs.
+	seen_pairs=""
+	# In loopback mode, do not depend on discovery; deliver directly once
+	if [ "$LOOPBACK" = "1" ]; then
+		if [ -n "$PSK" ]; then
+			frame=$(printf '{"id":"%s","ts":%s,"kind":"hb","psk":"%s"}' "$SELF_ID" "$ts_cycle" "$PSK")
+		else
+			frame=$(printf '{"id":"%s","ts":%s,"kind":"hb"}' "$SELF_ID" "$ts_cycle")
+		fi
+		send_payload 127.0.0.1 "$PROTO_DEFAULT" "${NRSYNCD_SC_PORT:-0}" "$frame" || true
+		debug "broadcast loopback delivered"
+		return 0
+	fi
+	# Gather peers; if none, still succeed silently
+	peers=$(discover_peers || true)
+	[ -n "$peers" ] && debug "discovered_peers: $(printf '%s' "$peers" | tr '\n' ' ')"
+	# Cache our self IPs once per cycle
+	SELF_IPS=$(get_self_ips)
+	# Iterate robustly over lines (instance may contain spaces)
+	tmpfile=$(mktemp 2>/dev/null || printf '/tmp/nrsyncd_bcast.%s' "$$")
+	trap 'rm -f "$tmpfile"' EXIT INT TERM
+	printf '%s\n' "$peers" >"$tmpfile"
+	exec 3<"$tmpfile"
+	while IFS= read -r p <&3; do
+		# p: host|proto:port|inst? (inst may be empty)
+		host=${p%%|*}
+		rest=${p#*|}
+		sc=${rest%%|*}
+		inst=""
+		[ "$rest" != "$sc" ] && inst=${rest#*|}
+		[ -z "$sc" ] && continue
+		proto=${sc%%:*}
+		port=${sc##*:}
+		# Skip entries with no host or that match self
+		[ -z "$host" ] && {
+			debug "skip empty host inst=$inst"
+			continue
+		}
+		if is_self_target "$host" "$inst"; then
+			debug "skip self target host=$host inst=$inst"
+			continue
+		fi
+		# Deduplicate host+sc (proto:port) combos
+		pair="$host|$sc"
+		case " $seen_pairs " in *" $pair "*)
+			debug "skip duplicate pair=$pair inst=$inst"
+			continue
+			;;
+		esac
+		seen_pairs="$seen_pairs $pair"
+		# If instance missing, synthesize from host (best-effort) for id stability
+		[ -z "$inst" ] && inst="$host"
+		[ -z "$host" ] && {
+			debug "skip empty host inst=$inst"
+			continue
+		}
+		[ -z "$proto" ] && proto=$PROTO_DEFAULT
+		# Build per-target frame explicitly (avoid sed mutation side-effects)
+		if [ -n "$PSK" ]; then
+			frame=$(printf '{"id":"%s","ts":%s,"kind":"hb","psk":"%s"}' "$inst" "$ts_cycle" "$PSK")
+		else
+			frame=$(printf '{"id":"%s","ts":%s,"kind":"hb"}' "$inst" "$ts_cycle")
+		fi
+		if [ "$DIRECT_INGEST" = "1" ]; then
+			# Best-effort direct ingest (test mode) retaining discovery semantics
+			if sc_bin=$(command -v nrsyncd_sidechannel 2>/dev/null); then
+				printf '%s' "$frame" | "$sc_bin" --ingest || true
+			else
+				debug "direct_ingest requested but sidechannel binary not found"
+			fi
+		else
+			send_payload "$host" "$proto" "$port" "$frame" || true
+		fi
+		count=$((count + 1))
+		[ $count -ge 50 ] && break
+	done
+	exec 3<&-
+	rm -f "$tmpfile"
+	trap - EXIT INT TERM
+	debug "broadcast sent to $count peers"
+}
+
+if [ "${1:-}" = "--once" ]; then
+	one_cycle
+	exit 0
+fi
+
+log "broadcast helper starting (interval=$BCAST_INTERVAL jitter_max=$BCAST_JITTER loopback=$LOOPBACK)"
+while :; do
+	one_cycle
+	j=$(rand_jitter)
+	sleep $((BCAST_INTERVAL + j))
+done

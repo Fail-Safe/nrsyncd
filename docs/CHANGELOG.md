@@ -2,6 +2,43 @@
 
 All notable changes will be documented here. Dates use UTC.
 
+## [Unreleased]
+
+_(no changes yet)_
+
+## [1.1.0] - 2025-09-26
+
+### Added
+
+- Optional sidechannel TXT token `sc=<proto>:<port>` exposure documented; listener prefers `socat` backend when available.
+- Broadcast helper (`nrsyncd_broadcast_helper`): proactive heartbeat/status frames to discovered peers (structured discovery, self-filtering, jittered cadence, host+endpoint dedup).
+- Test env toggles: `NRSYNCD_SC_BCAST_DIRECT_INGEST` (direct ingest without network) and `NRSYNCD_SC_DISABLE_SELF_HEARTBEAT` (suppress sidechannel self file) documented.
+
+### Changed
+
+- README: Expanded architecture table (sidechannel + broadcast helper) and clarified dependency preference order (`socat` → `ncat` → `nc`).
+- Developer guide/README: Documented self-filter logic and structured discovery (announcements-first, browse fallback) with AWK fallback parser.
+- Removed experimental internal `mdns_publisher` (dynamic TXT mutation path); sidechannel + overlay cover dynamic needs.
+
+## [1.0.3] - 2025-09-25
+
+### Added
+
+- Tests: Added quotes-SSID scenario to validate end-to-end handling of embedded double quotes in SSIDs. Updated mocks (`jsonfilter`, `ubus`, `iwinfo`) and assertions accordingly.
+
+### Changed
+
+- Daemon: Canonicalization uses JSON parsing throughout and normalizes JSON-encoded array lines from mDNS TXT before scanning. Maintains stable ordering (SSID, then BSSID) and reduces fragile text parsing.
+- Internal mapping: Switch temporary SSID→iface map to TAB as the field separator to avoid collisions with SSID contents (spaces, plus signs, quotes).
+- Debuggability: Added targeted debug lines (`remote_entries`, `group_build`, `canon_line`, `canon_wrapped`, `canon_scan`, `cache_hit`/`cache_write`) gated by `NRSYNCD_DEBUG=1` to speed up diagnostics without noisy logs by default.
+
+### Fixed
+
+- Robust SSID handling end-to-end: SSIDs with spaces (including repeated), plus signs (`+`), and embedded double quotes are preserved and JSON-escaped correctly in all paths.
+- Quotes-SSID update path: Properly escape SSID before awk variable binding in group membership lookup, ensuring `rrm_nr_set` updates occur and payloads retain intended escaping.
+- TXT parsing: Hardened mock `jsonfilter` and TXT item splitting to avoid breaking on escaped quotes or commas inside items; daemon now unescapes one level when TXT carries JSON-encoded arrays.
+
+
 ## [1.0.2] - 2025-09-01
 
 ### Added

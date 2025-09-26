@@ -29,22 +29,26 @@ Inspiration for this `nrsyncd` project comes from pioneering efforts by [Kiss Á
 - Baseline per‑SSID push guarantees initial hostapd population even with no diff
 - Remote uniqueness tracking (cycle + cumulative) for observability of discovery breadth
  - Remote installer mode (stage & execute over SSH with a single command)
+ - Optional sidechannel TXT advertisement (`sc=<proto>:<port>`) and listener for richer peer state exchange (extended mode)
+ - Optional broadcast helper: proactive heartbeat/status JSON frames to discovered sidechannel peers (self-filtering, jittered)
 
 ## Architecture 🏗	️
 
 Component | Purpose
 ----------|--------
 `service/nrsyncd.init` | procd init script: gathers NR data via `ubus`, formats TXT args, registers mDNS service
-`bin/nrsyncd` | Opaque daemon consuming positional `SSIDn=<value>` args (prebuilt; no source here)
+`bin/nrsyncd` | Daemon script (POSIX shell) consuming positional `SSIDn=<value>` args
 `lib/nrsyncd_common.sh` | Shared POSIX helpers (adaptive retry, iface mapping, millisecond sleep abstraction, probes)
+`bin/nrsyncd_sidechannel` | Optional sidechannel listener (extended mode) writing last peer frame per id
+`bin/nrsyncd_broadcast_helper` | Optional sidechannel heartbeat broadcaster (extended mode)
 `examples/wireless.config` | Example `/etc/config/wireless` enabling 802.11k (`ieee80211k '1'`, `bss_transition '1'`)
 
 ### Data Flow Summary 🔀
 
 1. Count enabled `wifi-iface` stanzas (skip those with `option disabled '1'`).
 2. Wait until that many `hostapd.*` objects appear on `ubus` (ensures hostapd ready).
-3. For each `hostapd.*`: call `ubus call <obj> rrm_nr_get_own` (method name unchanged) → JSON `{"value":"..."}`.
-4. Build concatenated string `+SSID<n>=<value>` (delimiter `+` chosen because invalid in SSIDs) then split into positional args.
+3. For each `hostapd.*`: call `ubus call <obj> rrm_nr_get_own` (method name unchanged) → JSON `{ "value": [bssid, ssid, hex] }`.
+4. Assemble positional arguments per SSID as individual tokens using safe `set -- "$@" "SSIDn=<value>"` (no string delimiter or splitting). SSIDs are preserved literally, including spaces, `+`, and quotes.
 5. Start daemon & register versioned mDNS service `nrsyncd_v1` (type `_nrsyncd_v1._udp`) on UDP/32025 with those TXT records (all `SSIDn=` first, then metadata `v/c/h`). Legacy `_rrm_nr._udp` is browsed only as a fallback for discovery.
 
 ### Startup Sequence (Mermaid) 🧜‍♀️
@@ -71,6 +75,50 @@ sequenceDiagram
 	init->>umdns: register service nrsyncd_v1 (TXT=SSIDn=... v/c/h)
 	umdns-->>network: announce _nrsyncd_v1._udp (UDP/32025)
 ```
+
+### Experimental: Activity Overlay (extended mode) 🧪
+
+Background: `umdns` can’t mutate TXT records after registration, so core SSIDn= + metadata (`v/c/h`) remain static until the service is refreshed. To expose rapidly changing, derived “activity” signals without touching the positional SSID tokens, nrsyncd supports an optional “overlay” channel (requires `extended=1`):
+
+- When the overlay is enabled (via `option activity_overlay '1'` and `extended=1`), protocol version bumps to `v=2` to signal the presence of new TXT keys after the core metadata. Two additional TXT keys may appear at the end (order preserved):
+	- `a=` list of active SSID ordinals (e.g. `a=1,3`), or `<none>`
+	- `i=` list of inactive SSID ordinals (e.g. `i=2`), or `<none>`
+- The daemon computes and writes overlay tokens atomically to `/tmp/nrsyncd_overlay_tokens` each cycle. Consumers can ignore unknown TXT keys safely.
+
+
+Overlay behavior:
+- Requires `extended=1` and `option activity_overlay '1'`.
+- Init seeds placeholders; daemon updates `/tmp/nrsyncd_overlay_tokens` with live ordinals.
+- TXT ordering is preserved. Consumers should ignore unknown keys to remain forward-compatible.
+
+Verification tips on device:
+- Browse: `ubus call umdns browse | jsonfilter -l1 -e '@["_nrsyncd_v1._udp"][*].txt[*]'` (some builds need `[*]` twice). If parsing is flaky, fall back to `awk` on raw output.
+- Packet-level: `tcpdump -n -i br-lan udp port 5353 and dst 224.0.0.251` and look for TXT strings including `a=`/`i=`.
+- Bonjour: if available, `dns-sd -B _nrsyncd_v1._udp` then `dns-sd -L <Instance> _nrsyncd_v1._udp local` to dump TXT.
+
+At rest (overlay disabled), TXT looks like:
+```
+SSID1=… SSID2=… v=1 c=2 h=deadbeef
+```
+With overlay enabled but no dynamic classification yet, placeholders are appended and `v=2`:
+```
+SSID1=… SSID2=… v=2 c=2 h=deadbeef a=<none> i=<none>
+```
+
+Notes and invariants:
+- All `SSIDn=` tokens come first, followed by `v= c= h=` metadata, then any future keys (`a=`/`i=` today). Ordering and existing ordinals never change.
+- Overlay tokens are derived from the stable ordinal map that the init script writes at startup; ordinals reflect the positional `SSIDn=` ordering.
+- Overlay is independent of the optional sidechannel. See “Configuration” below for enabling overlay and the sidechannel.
+
+### SSID character handling and separators
+
+`nrsyncd` preserves SSIDs exactly as reported by `hostapd`/`iwinfo`, including spaces (even repeated), plus signs (`+`), and embedded double quotes. To ensure robustness across these cases:
+
+- The init script assembles each `SSIDn=` as its own positional argument; there is no string concatenation or custom delimiter.
+- Inside the daemon, internal mappings use a TAB character as the field separator (not `|` or `+`) to avoid collisions with typical SSID contents.
+- When emitting or parsing JSON, SSIDs are JSON-escaped (quotes/backslashes) so that neighbor lists and diagnostics remain valid JSON.
+
+These changes mean SSIDs such as `My  SSID With  Spaces`, `Guest+Lab`, or `SSID "Quote" Test` are handled end-to-end without special-casing or data loss.
 
 ## Legacy Note 📜
 
@@ -310,6 +358,81 @@ config nrsyncd 'global'
  	# list skip_iface 'phy0-ap1'
 ```
 
+Optional overlay setting (extended mode):
+
+```
+config nrsyncd 'global'
+	option activity_overlay '0'        # 1 = enable overlay TXT placeholders (v=2; appends a=<none>/i=<none>)
+```
+
+Operational behavior when enabled:
+- With `activity_overlay=1`, the init script appends placeholder `a=<none>` and `i=<none>` tokens to the TXT on registration and seeds `/tmp/nrsyncd_overlay_tokens`.
+- The daemon periodically updates `/tmp/nrsyncd_overlay_tokens` with `a=`/`i=` ordinals derived from recent activity and writes the ordinals into `/tmp/nrsyncd_runtime` for inspection.
+
+- Ordering invariants for `SSIDn=` and metadata are always preserved; consumers can read `v/c/h` reliably regardless of overlay presence.
+
+
+
+### Optional: tiny peer sidechannel (prototype; extended mode)
+
+For richer, low-latency state exchange than TXT allows, nrsyncd can advertise and run a tiny opt-in sidechannel listener. Discovery remains mDNS-first; when enabled, a TXT token `sc=<proto>:<port>` is appended after the core metadata tokens so peers can discover how to talk directly. This feature requires `extended=1` and explicit enablement.
+
+- Default: disabled; enabling does not change the core mDNS behavior.
+- Listener: supervised by procd via `/usr/bin/nrsyncd_sidechannel` (shell stub; prefers `socat`, then `ncat`, then BusyBox `nc` if it supports required listen flags).
+- Protocol: `udp` (default) or `tcp` on a configurable port (default `32026`).
+- Security: optional pre-shared key (PSK) filter; messages are not encrypted. Use on trusted LANs and consider firewalling appropriately.
+
+UCI options (all under `config nrsyncd 'global'`; requires `extended=1`):
+- `option sidechannel_enable '0'` — set to `1` to enable
+- `option sidechannel_port '32026'` — UDP/TCP port
+- `option sidechannel_proto 'udp'` — `udp` or `tcp`
+- `option sidechannel_psk ''` — optional PSK; when set, incoming JSON frames must contain `"psk":"<value>"`
+- `option sidechannel_bind ''` — optional source bind address. The stub uses it only if supported by the local `nc`.
+
+Dependencies and tooling:
+- The sidechannel listener relies on a local listener tool. Current preference order: `socat` (per-datagram SYSTEM ingest), `ncat`, then BusyBox `nc` if it supports `-l/-p` (and `-u` for UDP).
+- Many BusyBox `nc` builds on OpenWrt are client-only and do not support `-l`. If so, install one of:
+	- `opkg install socat` (preferred)
+	- or `opkg install nmap-ncat` (provides `ncat`)
+- If none are available, the listener logs an explanatory message and disables receive until a suitable tool is installed.
+
+Enable and verify (enable extended mode first):
+```sh
+uci set nrsyncd.global.extended=1
+uci set nrsyncd.global.sidechannel_enable=1
+# optional tweaks:
+# uci set nrsyncd.global.sidechannel_proto='udp'   # or 'tcp'
+# uci set nrsyncd.global.sidechannel_port='32026'
+# uci set nrsyncd.global.sidechannel_psk='secret'
+# uci set nrsyncd.global.sidechannel_bind='192.168.1.2'   # if your nc supports -s
+uci commit nrsyncd
+/etc/init.d/nrsyncd reload   # spawns sidechannel under procd when enabled
+
+# Confirm TXT includes sc=proto:port
+ubus call umdns browse | jsonfilter -l1 -e '@["_nrsyncd_v1._udp"][*].txt[*]' | grep '^sc='
+```
+
+Quick test (from another host; requires extended=1 and sidechannel enabled):
+```sh
+# UDP example without PSK
+echo '{"id":"lab","hello":1}' | nc -u <ap-ip> 32026
+
+# With PSK enabled in UCI, include the matching field:
+echo '{"id":"lab","psk":"secret","hello":1}' | nc -u <ap-ip> 32026
+
+# If nc is unavailable on the sender, you can also use socat:
+printf '{"id":"lab","hello":1}\n' | socat - UDP-SENDTO:<ap-ip>:32026
+
+# Inspect on the AP
+ls -1 /tmp/nrsyncd_state/sidechannel_peers
+cat /tmp/nrsyncd_state/sidechannel_peers/lab.json
+```
+
+Notes:
+- Message schema is intentionally minimal for now: any single-line JSON is accepted; the stub extracts `id` (fallback `unknown`) and writes the last frame to `/tmp/nrsyncd_state/sidechannel_peers/<id>.json` (capped at 8KB).
+- A lightweight heartbeat with the AP’s own `id` is written every 30 seconds.
+- The `sidechannel_bind` option is best-effort: it’s used only if the installed `nc` supports `-s`. Prefer firewall rules to restrict reachability.
+
 Live changes: Most runtime tunables (intervals, jitter, debug, umdns refresh, settle delay, skip_iface) can be reloaded without a full restart:
 
 ```sh
@@ -393,6 +516,7 @@ Command | Purpose | Notes
 `skiplist` | Effective configured skip_iface entries | Normalized view
 `version` | Init script version (and git hash if available) | Sync with release tag
 `metadata` | Show parsed live mDNS TXT advertisement (SSIDn tokens + metadata v/c/h) | Useful to verify ordering and hash
+`overlay` / `overlay_state` | Show overlay files (ordinal map + tokens) | Inspect `/tmp/nrsyncd_ordinal_map` and `/tmp/nrsyncd_overlay_tokens`
 
 ### Reloading Configuration ↻
 
@@ -534,6 +658,8 @@ To keep files across firmware flashes, add these lines to `/etc/sysupgrade.conf`
 /etc/init.d/nrsyncd
 /usr/bin/nrsyncd
 /lib/nrsyncd_common.sh
+# Optional sidecar (if installed):
+
 ```
 Note: UCI configs in `/etc/config/*` (including `/etc/config/nrsyncd`) are already preserved by sysupgrade; no need to list them.
 
@@ -571,11 +697,41 @@ opkg install coreutils-sleep   # or
 apk add coreutils
 ```
 
+### Optional: Sidechannel broadcast helper (experimental)
+
+If you enable the sidechannel (extended mode), you can optionally run a tiny broadcaster that proactively sends a small heartbeat/status JSON frame to peers discovered via the `sc=` TXT token. This can help receivers learn about peers sooner without relying on them to initiate contact.
+
+Enable (requires `extended=1` first):
+```
+uci set nrsyncd.global.extended=1
+uci set nrsyncd.global.sidechannel_enable=1
+uci set nrsyncd.global.sidechannel_broadcast_enable=1
+# Optional tuning:
+# uci set nrsyncd.global.sidechannel_broadcast_interval=60
+# uci set nrsyncd.global.sidechannel_broadcast_jitter=10
+# uci set nrsyncd.global.sidechannel_proto='udp'   # or 'tcp'; broadcaster inherits this
+# uci set nrsyncd.global.sidechannel_psk='secret'  # included in payload if set
+uci commit nrsyncd
+/etc/init.d/nrsyncd restart
+```
+
+Notes:
+- Discovery is still via mDNS; the helper extracts `sc=proto:port` from announcements + browse output (both scanned) and sends to up to ~50 peers per cycle. Duplicate entries (same host + proto:port) are automatically de‑duplicated.
+- Backends used: `socat`, then `ncat`, then `nc` (best effort). If none are present, it logs a debug line and continues.
+- Payload is minimal: `{ "id": "<hostname>", "ts": <epoch>, "kind": "hb", "psk": "..."? }`.
+- Logging tag: `nrsyncd_sc_bcast`.
+- Self-filtering: skips localhost entries, its own instance name, and any of its local IP addresses to avoid self-loop traffic.
+- Discovery parsing: structured `jsonfilter` path first (browse then announcements) with a resilient fallback scanner. If both sources contain the same service, a single heartbeat is sent (dedup by host + proto:port). Instance names with spaces are preserved.
+
+Test / debug environment toggles (not required in production):
+- `NRSYNCD_SC_BCAST_DIRECT_INGEST=1` – deliver frames directly to the sidechannel ingest path (bypasses network send) while still performing full discovery & self‑filtering; used in tests.
+- `NRSYNCD_SC_DISABLE_SELF_HEARTBEAT=1` – suppress the sidechannel daemon’s periodic self heartbeat file (simplifies certain test assertions).
+
 ## Limitations ⏸️
 
 Summary (full discussion and future roadmap ideas in `docs/DEVELOPER.md`):
 - Large deployments (>20 AP) may see slower convergence.
-- Binary daemon is prebuilt (no current source in repo).
+- Daemon is implemented as a POSIX shell script in this repository.
 - Remote ingestion relies on mDNS reachability; packet loss can delay uniqueness visibility.
 - Very large remote sets could inflate lists (future cap option contemplated).
 
