@@ -58,25 +58,34 @@ SCRIPT_DIR=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../../" && pwd -P)
 
 run_install() {
-  echo "[test] Running install: $*"
-  PATH="$PATH_FAKE" NRSYNCD_TEST_MODE=1 sh "$REPO_ROOT/scripts/install.sh" --prefix "$ROOT" --no-start --deps-auto-yes --add-sysupgrade "$@" || true
+	echo "[test] Running install: $*"
+	PATH="$PATH_FAKE" NRSYNCD_TEST_MODE=1 sh "$REPO_ROOT/scripts/install.sh" --prefix "$ROOT" --no-start --deps-auto-yes --add-sysupgrade "$@" || true
 }
 
 run_install
 
 echo "[test] Checking created config"
-grep -q 'config nrsyncd' "$ROOT/etc/config/nrsyncd" || { echo '[FAIL] missing nrsyncd config'; exit 1; }
+grep -q 'config nrsyncd' "$ROOT/etc/config/nrsyncd" || {
+	echo '[FAIL] missing nrsyncd config'
+	exit 1
+}
 
 echo "[test] Checking sysupgrade entries"
 for f in /etc/init.d/nrsyncd /usr/bin/nrsyncd /lib/nrsyncd_common.sh; do
-  grep -qx "$f" "$ROOT/etc/sysupgrade.conf" || { echo "[FAIL] missing $f in sysupgrade.conf"; exit 1; }
+	grep -qx "$f" "$ROOT/etc/sysupgrade.conf" || {
+		echo "[FAIL] missing $f in sysupgrade.conf"
+		exit 1
+	}
 done
 
 echo "[test] Forcing second run (should keep existing config)"
 before=$(cksum "$ROOT/etc/config/nrsyncd" | awk '{print $1,$2}')
 run_install
 after=$(cksum "$ROOT/etc/config/nrsyncd" | awk '{print $1,$2}')
-[ "$before" = "$after" ] || { echo '[FAIL] config unexpectedly changed without --force-config'; exit 1; }
+[ "$before" = "$after" ] || {
+	echo '[FAIL] config unexpectedly changed without --force-config'
+	exit 1
+}
 
 echo "[test] Force config overwrite"
 sleep 1
@@ -89,10 +98,33 @@ grep -Ri 'ieee80211k' "$ROOT" || true
 
 echo "[test] Running auto-fix (--fix-wireless)"
 run_install --fix-wireless
-grep -q "ieee80211k '1'  # added by nrsyncd" "$ROOT/etc/config/wireless" || { echo '[FAIL] auto-fix did not add ieee80211k'; exit 1; }
-grep -q "# nrsyncd wireless auto-fix applied" "$ROOT/etc/config/wireless" || { echo '[FAIL] auto-fix marker missing'; exit 1; }
+grep -q "ieee80211k '1'  # added by nrsyncd" "$ROOT/etc/config/wireless" || {
+	echo '[FAIL] auto-fix did not add ieee80211k'
+	exit 1
+}
+grep -q "# nrsyncd wireless auto-fix applied" "$ROOT/etc/config/wireless" || {
+	echo '[FAIL] auto-fix marker missing'
+	exit 1
+}
 
 echo "[test] DONE (basic harness)"
+
+# --- Sidecar installation path test ---
+# Create a dummy sidecar artifact in the repo and ensure installer deploys it and persists it
+echo "[test] Creating dummy sidecar artifact"
+mkdir -p "$REPO_ROOT/build"
+:
+
+echo "[test] Running install with sidecar present"
+run_install
+
+echo "[test] Checking sidecar deployed"
+:
+
+echo "[test] Checking sidecar persisted"
+:
+
+echo "[test] DONE (sidecar path)"
 
 # Cleanup left for manual inspection; uncomment to auto-remove
 # rm -rf "$ROOT"

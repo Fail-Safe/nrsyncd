@@ -1,0 +1,1 @@
+{"_nrsyncd_v1._udp":[{"txt":["SSID1=NRVAL0","v=1","c=1","h=deadbeef","sc=udp:32026"],"ipv4":["192.0.2.10"],"hostname":"peer-ap"},{"txt":["SSID1=NRVAL0","v=1","c=1","h=deadbeef","sc=udp:32026"],"ipv4":["127.0.0.1"],"hostname":"self-ap"}]}

@@ -4,23 +4,45 @@ read_input() { cat; }
 INPUT=$(read_input)
 expr=""
 while [ $# -gt 0 ]; do
-  case "$1" in
-    -e) shift; expr=$1 ;;
-    -l*) shift ;; # ignore length options like -l1
-    *) shift ;;
-  esac
+	case "$1" in
+	-e)
+		shift
+		expr=$1
+		;;
+	-l*) shift ;; # ignore length options like -l1
+	*) shift ;;
+	esac
 done
 case "$expr" in
-  '$.value') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\([^}]*\).*/\1/p' ;;
-  '$.value[0]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["\([^"\]*\)".*/\1/p' ;;
-  '$.value[1]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"\]*","\([^"\]*\)".*/\1/p' ;;
-  '$.value[2]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"\]*","[^"\]*","\([^"\]*\)".*/\1/p' ;;
-  '@.ssid') echo "$INPUT" | sed -n 's/.*"ssid"[ ]*:[ ]*"\(.*\)".*/\1/p' ;;
-  '@.list[@]') echo "$INPUT" | sed -n 's/.*"list"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/^[ ]*\"//;s/\"$//' ;;
-  *)
-    # Any selector containing txt[...].txt[*] -> output each TXT item on its own line, trimming quotes/space
-    if printf '%s' "$expr" | grep -q 'txt\['; then
-      echo "$INPUT" | sed -n 's/.*"txt"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/^[[:space:]]*\"//; s/\"[[:space:]]*$//'
-    fi
-    ;;
+'$.value') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\([^}]*\).*/\1/p' ;;
+'$.value[0]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["\([^"\]*\)".*/\1/p' ;;
+'$.value[1]')
+	esc=$(printf '%s' "$INPUT" | sed 's/\\\"/@Q@/g')
+	out=$(printf '%s' "$esc" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"\]*","\([^"\]*\)".*/\1/p')
+	printf '%s' "$out" | sed 's/@Q@/"/g'
+	;;
+'$.value[2]') echo "$INPUT" | sed -n 's/.*"value"[ ]*:[ ]*\["[^"\]*","[^"\]*","\([^"\]*\)".*/\1/p' ;;
+'@.v[0]') echo "$INPUT" | sed -n 's/.*"v"[ ]*:[ ]*\["\([^"\]*\)".*/\1/p' ;;
+'@.v[1]')
+	# Mask escaped quotes in inner strings. Inputs may contain \" or \\\"; mask both.
+	esc=$(printf '%s' "$INPUT" | sed -e 's/\\\\\"/@Q@/g' -e 's/\\\"/@Q@/g')
+	out=$(printf '%s' "$esc" | sed -n 's/.*"v"[ ]*:[ ]*\["[^"\]*","\([^"]*\)".*/\1/p')
+	printf '%s' "$out" | sed 's/@Q@/\\"/g'
+	;;
+'@.v[2]')
+	# Mask escaped quotes similarly to avoid early string termination in pattern.
+	esc=$(printf '%s' "$INPUT" | sed -e 's/\\\\\"/@Q@/g' -e 's/\\\"/@Q@/g')
+	echo "$esc" | sed -n 's/.*"v"[ ]*:[ ]*\["[^"\]*","[^"]*","\([^"]*\)".*/\1/p'
+	;;
+'@.ssid') echo "$INPUT" | sed -n 's/.*"ssid"[ ]*:[ ]*"\(.*\)".*/\1/p' ;;
+'@.list[@]') echo "$INPUT" | sed -n 's/.*"list"[ ]*:[ ]*\[\(.*\)\].*/\1/p' | tr ',' '\n' | sed 's/^[ ]*\"//;s/\"$//' ;;
+*)
+	# Any selector containing txt[...].txt[*] -> output each TXT item on its own line.
+	# We must not split on all commas because items themselves may contain commas.
+	# Split only on the item separator sequence "," and then strip surrounding quotes/spaces.
+	if printf '%s' "$expr" | grep -q 'txt\['; then
+		inner=$(printf '%s' "$INPUT" | sed -n 's/.*"txt"[ ]*:[ ]*\[\(.*\)\].*/\1/p')
+		printf '%s' "$inner" | sed 's/","/\n/g; s/^[[:space:]]*"//; s/"[[:space:]]*$//'
+	fi
+	;;
 esac

@@ -1,0 +1,2 @@
+#!/bin/sh
+# Scenario: broadcast self-filter (presence of self + peer in umdns browse)

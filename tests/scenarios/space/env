@@ -1,0 +1,2 @@
+# Scenario: space-ssid
+# Two hostapd interfaces; SSIDs include spaces (including consecutive spaces)

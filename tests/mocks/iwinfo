@@ -5,6 +5,8 @@ IFACE=$1
 MAP_FILE="${SCENARIO}/iwinfo.map"
 SSID=$(grep "^$IFACE " "$MAP_FILE" 2>/dev/null | cut -d' ' -f2-)
 [ -z "$SSID" ] && SSID="TestSSID"
+# Escape any embedded double quotes for a valid quoted ESSID line
+ESC=$(printf '%s' "$SSID" | sed 's/\\/\\\\/g; s/"/\\"/g')
 cat <<EOF
-ESSID: "$SSID"
+ESSID: "$ESC"
 EOF

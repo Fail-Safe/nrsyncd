@@ -1,0 +1,2 @@
+# Scenario: quotes-ssid
+# Two hostapd interfaces; SSID contains embedded double quotes to test JSON escaping.
