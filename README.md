@@ -110,6 +110,40 @@ Notes and invariants:
 - Overlay tokens are derived from the stable ordinal map that the init script writes at startup; ordinals reflect the positional `SSIDn=` ordering.
 - Overlay is independent of the optional sidechannel. See “Configuration” below for enabling overlay and the sidechannel.
 
+### TXT Token Pruning (BusyBox umdns cap) ✂️
+
+BusyBox `umdns` silently drops TXT records beyond an internal limit (empirically ~8). Optional features (overlay placeholders + sidechannel) can push the raw token count over this cap. To ensure discoverability of critical metadata while staying within the limit, `nrsyncd` applies a deterministic pruning policy at advertisement assembly time.
+
+Composition examples (overlay placeholders shown as `<none>` when not yet populated):
+
+Case | Components | Raw Count | Over Cap?
+-----|------------|-----------|----------
+Baseline (no overlay / sidechannel) | SSID1..N + v + c + h | N + 3 | Usually no
+Overlay only | SSID1..N + v + c + h + a=<none> + i=<none> | N + 5 | 4 SSIDs => 9 (yes)
+Overlay + sidechannel | SSID1..N + v + c + h + a=<none> + i=<none> + sc=proto:port | N + 6 | 3 SSIDs => 9 (yes)
+
+Pruning priority (keep strongest first):
+1. All `SSIDn=` tokens (never removed)
+2. Core metadata: `v=`, `c=`, `h=`
+3. Sidechannel token: `sc=` (retained unless all placeholders already removed and we still overflow)
+4. Placeholder overlay tokens: prune `i=<none>` first, then `a=<none>`
+5. (Future) Only if still over cap after removing placeholders may `sc=` be pruned
+
+Worked examples (overlay + sidechannel enabled):
+- 3 SSIDs → initial 9 tokens → prune `i=<none>` → final 8 (retain `a=<none>`, `sc=`)
+- 4 SSIDs → initial 10 tokens → prune `i=<none>` then `a=<none>` → final 8 (retain `sc=`)
+
+Operational notes:
+- Pruning runs once in the init script when building the TXT argument vector; ordering of remaining tokens is preserved.
+- A marker file `/tmp/nrsyncd_state/pruning` records which placeholder tokens were removed (`i`, `a`, optionally `sc`). Empty file means no pruning.
+- Consumers seeing `v=2` without `a=`/`i=` should interpret absence as pruning (placeholders dropped), not as an error.
+
+Test coverage (see `tests/`):
+- `prune_three`: validates single placeholder pruning (3 SSIDs, drop `i=<none>` only).
+- `prune_four`: validates dual placeholder pruning (4 SSIDs, drop `i=<none>`, then `a=<none>`).
+
+Adding new TXT metadata: append only after existing keys and, if it can push counts above the cap, extend the pruning rules (favor pruning lowest-value, derivable tokens before capability indicators like `sc=`). Update this section and add a dedicated test scenario.
+
 ### SSID character handling and separators
 
 `nrsyncd` preserves SSIDs exactly as reported by `hostapd`/`iwinfo`, including spaces (even repeated), plus signs (`+`), and embedded double quotes. To ensure robustness across these cases:

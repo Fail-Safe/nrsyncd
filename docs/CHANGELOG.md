@@ -4,7 +4,12 @@ All notable changes will be documented here. Dates use UTC.
 
 ## [Unreleased]
 
-_(no changes yet)_
+### Added
+- Deterministic TXT pruning documentation (README) covering BusyBox `umdns` ~8 TXT cap.
+- Test scenarios: `prune_three` (single placeholder prune) and `prune_four` (dual placeholder prune) verifying pruning order.
+
+### Changed
+- Init script: simplified pruning implementation (drop `i=<none>`, then `a=<none>`, then `sc=` only if still above cap) and write pruning marker file.
 
 ## [1.1.0] - 2025-09-26
 
