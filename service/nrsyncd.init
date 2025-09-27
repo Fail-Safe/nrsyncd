@@ -25,56 +25,41 @@ CFG_DEBUG=0
 CFG_UMDNS_REFRESH_INTERVAL=30
 CFG_UMDNS_SETTLE_DELAY=0
 CFG_SKIP_IFACES=""
+
 CFG_ENABLED=1
-CFG_QUICK_MAX_MS=2000
-CFG_SECOND_PASS_MS=800
-CFG_ACTIVITY_OVERLAY=0
-CFG_OVERLAY_I_STATIC=""
-CFG_SIDECHANNEL_ENABLE=0
-CFG_SIDECHANNEL_PORT=32026
-CFG_SIDECHANNEL_PROTO="udp"
-CFG_SIDECHANNEL_PSK=""
-CFG_SIDECHANNEL_BIND=""
-CFG_SIDECHANNEL_BCAST_ENABLE=0
-CFG_SIDECHANNEL_BCAST_INTERVAL=60
-CFG_SIDECHANNEL_BCAST_JITTER=10
-CFG_EXTENDED=0
 
-append_skip_iface() {
-	val="$1"
-	[ -n "$val" ] && CFG_SKIP_IFACES="${CFG_SKIP_IFACES} ${val}"
-}
-
+# Load UCI configuration into CFG_* variables. Restores function removed during pruning refactor.
 load_nrsyncd_config() {
+	# Reset to defaults first
+	CFG_UPDATE_INTERVAL=${CFG_UPDATE_INTERVAL:-60}
+	CFG_JITTER_MAX=${CFG_JITTER_MAX:-10}
+	CFG_DEBUG=${CFG_DEBUG:-0}
+	CFG_UMDNS_REFRESH_INTERVAL=${CFG_UMDNS_REFRESH_INTERVAL:-30}
+	CFG_UMDNS_SETTLE_DELAY=${CFG_UMDNS_SETTLE_DELAY:-0}
 	CFG_SKIP_IFACES=""
-	config_load nrsyncd
-	config_get CFG_ENABLED global enabled 1
-	config_get CFG_UPDATE_INTERVAL global update_interval 60
-	config_get CFG_JITTER_MAX global jitter_max 10
-	config_get CFG_DEBUG global debug 0
-	config_get CFG_UMDNS_REFRESH_INTERVAL global umdns_refresh_interval 30
-	config_get CFG_UMDNS_SETTLE_DELAY global umdns_settle_delay 0
-	config_get CFG_QUICK_MAX_MS global quick_max_ms 2000
-	config_get CFG_SECOND_PASS_MS global second_pass_ms 800
-	config_get CFG_ACTIVITY_OVERLAY global activity_overlay 0
-	# Internal publisher removed to simplify core; dynamics use sidechannel if extended.
-	config_get CFG_OVERLAY_I_STATIC global overlay_i_static ""
-	config_get CFG_EXTENDED global extended 0
-	# Optional peer-to-peer sidechannel for richer state exchange (discovery still via mDNS)
-	config_get CFG_SIDECHANNEL_ENABLE global sidechannel_enable 0
-	config_get CFG_SIDECHANNEL_PORT global sidechannel_port 32026
-	config_get CFG_SIDECHANNEL_PROTO global sidechannel_proto udp
-	config_get CFG_SIDECHANNEL_PSK global sidechannel_psk ""
-	config_get CFG_SIDECHANNEL_BIND global sidechannel_bind ""
-	config_get CFG_SIDECHANNEL_BCAST_ENABLE global sidechannel_broadcast_enable 0
-	config_get CFG_SIDECHANNEL_BCAST_INTERVAL global sidechannel_broadcast_interval 60
-	config_get CFG_SIDECHANNEL_BCAST_JITTER global sidechannel_broadcast_jitter 10
+	CFG_ENABLED=${CFG_ENABLED:-1}
+	CFG_ACTIVITY_OVERLAY=${CFG_ACTIVITY_OVERLAY:-0}
+	CFG_SIDECHANNEL_ENABLE=${CFG_SIDECHANNEL_ENABLE:-0}
+	CFG_SIDECHANNEL_PROTO=${CFG_SIDECHANNEL_PROTO:-udp}
+	CFG_SIDECHANNEL_PORT=${CFG_SIDECHANNEL_PORT:-32026}
 
-	# Gate advanced / experimental features unless extended=1 explicitly set.
-	if [ "$CFG_EXTENDED" != "1" ]; then
-		CFG_ACTIVITY_OVERLAY=0
-		CFG_SIDECHANNEL_ENABLE=0
-		CFG_SIDECHANNEL_BCAST_ENABLE=0
+	# UCI driven overrides (best effort; tests may not have uci available)
+	if command -v uci >/dev/null 2>&1; then
+		CFG_ENABLED=$(uci -q get nrsyncd.global.enabled 2>/dev/null || echo 1)
+		CFG_UPDATE_INTERVAL=$(uci -q get nrsyncd.global.update_interval 2>/dev/null || echo "$CFG_UPDATE_INTERVAL")
+		CFG_JITTER_MAX=$(uci -q get nrsyncd.global.jitter_max 2>/dev/null || echo "$CFG_JITTER_MAX")
+		CFG_DEBUG=$(uci -q get nrsyncd.global.debug 2>/dev/null || echo "$CFG_DEBUG")
+		CFG_UMDNS_REFRESH_INTERVAL=$(uci -q get nrsyncd.global.umdns_refresh_interval 2>/dev/null || echo "$CFG_UMDNS_REFRESH_INTERVAL")
+		CFG_UMDNS_SETTLE_DELAY=$(uci -q get nrsyncd.global.umdns_settle_delay 2>/dev/null || echo "$CFG_UMDNS_SETTLE_DELAY")
+		CFG_ACTIVITY_OVERLAY=$(uci -q get nrsyncd.global.activity_overlay 2>/dev/null || echo "${CFG_ACTIVITY_OVERLAY:-0}")
+		CFG_QUICK_MAX_MS=$(uci -q get nrsyncd.global.quick_max_ms 2>/dev/null || echo "${CFG_QUICK_MAX_MS:-2000}")
+		CFG_SECOND_PASS_MS=$(uci -q get nrsyncd.global.second_pass_ms 2>/dev/null || echo "${CFG_SECOND_PASS_MS:-800}")
+		CFG_SIDECHANNEL_ENABLE=$(uci -q get nrsyncd.global.sidechannel_enable 2>/dev/null || echo "${CFG_SIDECHANNEL_ENABLE:-0}")
+		CFG_SIDECHANNEL_PROTO=$(uci -q get nrsyncd.global.sidechannel_proto 2>/dev/null || echo "${CFG_SIDECHANNEL_PROTO:-udp}")
+		CFG_SIDECHANNEL_PORT=$(uci -q get nrsyncd.global.sidechannel_port 2>/dev/null || echo "${CFG_SIDECHANNEL_PORT:-32026}")
+		# Collect skip_iface list values
+		append_skip_iface() { CFG_SKIP_IFACES="$CFG_SKIP_IFACES $1"; }
+		config_list_foreach global skip_iface append_skip_iface 2>/dev/null || true
 	fi
 
 	# Sanitize numeric bounds for advanced readiness knobs
@@ -82,9 +67,6 @@ load_nrsyncd_config() {
 	[ "$CFG_QUICK_MAX_MS" -gt 5000 ] && CFG_QUICK_MAX_MS=5000
 	case "$CFG_SECOND_PASS_MS" in '' | *[!0-9]*) CFG_SECOND_PASS_MS=800 ;; esac
 	[ "$CFG_SECOND_PASS_MS" -gt 1500 ] && CFG_SECOND_PASS_MS=1500
-
-	# List syntax: one 'list skip_iface <iface>' per interface
-	config_list_foreach global skip_iface append_skip_iface 2>/dev/null || true
 
 	CFG_SKIP_IFACES=$(normalize_iflist "$CFG_SKIP_IFACES")
 	# Accept optional 'hostapd.' prefixes (user convenience); strip them.
@@ -303,67 +285,110 @@ start_service() {
 	# ---------------------------------------------------------------------------
 	# Defensive TXT token cap handling:
 	# BusyBox umdns appears to silently drop TXT records beyond an internal cap
-	# (empirically observed at 8). With overlay placeholders enabled we may have:
-	#   SSID1..N (>=1) + v= + c= + h= + a=<none> + i=<none> + sc=  => 3 + 5 = 8 (OK) or
-	#   4 SSIDs -> 4 + 5 = 9 (overflow) etc.
+	# (empirically observed at 8). With overlay placeholders + sidechannel enabled we have:
+	#   SSID1..N (>=1) + v= + c= + h= + a=<none> + i=<none> + sc=
+	# Metadata tokens here total 6 (v,c,h,a,i,sc).
+	# Examples:
+	#   2 SSIDs -> 2 + 6 = 8 (fits) => no pruning.
+	#   3 SSIDs -> 3 + 6 = 9 (overflow by 1) => prune i=<none> (policy) -> 8.
+	#   4 SSIDs -> 4 + 6 = 10 (overflow by 2) => prune i=<none>, then a=<none>; if still overflow (future extras) prune sc=.
 	# To preserve discoverability of the sidechannel (sc=), we trim lowest-value
 	# placeholder overlay tokens first when we exceed 8 tokens total. Priority:
 	#   1) Keep all SSIDn= (never removed)
 	#   2) Keep v= c= h=
 	#   3) Keep sc= (if sidechannel enabled)
-	#   4) Keep a= then i= (drop i=<none> first, then a=<none> if still over)
-	# If real (non-placeholder) overlay tokens are present in future they should
-	# not be trimmed; current implementation only uses <none> placeholders.
+	#   4) Drop i=<none> first, then a=<none>; only then (rare) sc=
+	# Simplified pruning implementation (replaces earlier complex reconstruction).
 	TXT_CAP=8
-	# Count total tokens
-	_tok_count=0
-	for _t in "$@"; do
-		_tok_count=$((_tok_count + 1))
-	done
+	_tok_count=$#
 	if [ $_tok_count -gt $TXT_CAP ]; then
-		_pruned=0
-		newlist=""
-		# Helper to rebuild list while skipping one occurrence
-		prune_once() {
-			_skip_tok="$1"; _done=0; newlist=""; for _t in "$@"; do :; done
+		# Pass 1: drop i=<none>
+		_new=""
+		_removed_i=0
+		for _t in "$@"; do
+			if [ $_removed_i -eq 0 ] && [ "$_t" = 'i=<none>' ] && [ $_tok_count -gt $TXT_CAP ]; then
+				_removed_i=1
+				_tok_count=$((_tok_count - 1))
+				continue
+			fi
+			_new="${_new}${_new:+|}$_t"
+		done
+		[ $_removed_i -eq 1 ] && {
+			OLD_IFS=$IFS
+			IFS='|'
+			set -- $_new
+			IFS=$OLD_IFS
 		}
-		# First attempt: drop i=<none>
-		if printf '%s\n' "$@" | grep -q '^i=<none>$'; then
-			for _t in "$@"; do
-				if [ "$_t" = 'i=<none>' ] && [ $_pruned -eq 0 ]; then _pruned=1; continue; fi
-				set -- "$@"
-			newlist="${newlist}${newlist:+ }$_t"
-			done
-			# Re-evaluate list into positional parameters
-			# shellcheck disable=SC2086
-			set -- $newlist
-		fi
-		# Recount; if still over cap, drop a=<none>
-		_tok_count=0; for _t in "$@"; do _tok_count=$((_tok_count + 1)); done
-		if [ $_tok_count -gt $TXT_CAP ] && printf '%s\n' "$@" | grep -q '^a=<none>$'; then
-			_pruned2=0; newlist=""
-			for _t in "$@"; do
-				if [ "$_t" = 'a=<none>' ] && [ $_pruned2 -eq 0 ]; then _pruned2=1; continue; fi
-				newlist="${newlist}${newlist:+ }$_t"
-			done
-			# shellcheck disable=SC2086
-			set -- $newlist
-		fi
-		# Final recount; if still over cap (rare: very high SSID count) drop sc=
-		_tok_count=0; for _t in "$@"; do _tok_count=$((_tok_count + 1)); done
-		if [ $_tok_count -gt $TXT_CAP ] && printf '%s\n' "$@" | grep -q '^sc='; then
-			_pruned3=0; newlist=""
-			for _t in "$@"; do
-				case "$_t" in sc=*) if [ $_pruned3 -eq 0 ]; then _pruned3=1; continue; fi;; esac
-				newlist="${newlist}${newlist:+ }$_t"
-			done
-			# shellcheck disable=SC2086
-			set -- $newlist
-		fi
-		# Log pruning decision (once)
-		if [ "$CFG_DEBUG" = "1" ]; then
-			logger -t "${NAME}" -p daemon.debug "TXT pruning applied: final_count=$_tok_count cap=$TXT_CAP args=$(printf '%s ' "$@")"
-		fi
+	fi
+	if [ $_tok_count -gt $TXT_CAP ]; then
+		# Pass 2: drop a=<none>
+		_new=""
+		_removed_a=0
+		for _t in "$@"; do
+			if [ $_removed_a -eq 0 ] && [ "$_t" = 'a=<none>' ] && [ $_tok_count -gt $TXT_CAP ]; then
+				_removed_a=1
+				_tok_count=$((_tok_count - 1))
+				continue
+			fi
+			_new="${_new}${_new:+|}$_t"
+		done
+		[ $_removed_a -eq 1 ] && {
+			OLD_IFS=$IFS
+			IFS='|'
+			set -- $_new
+			IFS=$OLD_IFS
+		}
+	fi
+	if [ $_tok_count -gt $TXT_CAP ]; then
+		# Pass 3 (rare): drop first sc=*
+		_new=""
+		_removed_sc=0
+		for _t in "$@"; do
+			case "$_t" in
+			sc=*) if [ $_removed_sc -eq 0 ] && [ $_tok_count -gt $TXT_CAP ]; then
+				_removed_sc=1
+				_tok_count=$((_tok_count - 1))
+				continue
+			fi ;;
+			esac
+			_new="${_new}${_new:+|}$_t"
+		done
+		[ $_removed_sc -eq 1 ] && {
+			OLD_IFS=$IFS
+			IFS='|'
+			set -- $_new
+			IFS=$OLD_IFS
+		}
+	fi
+	# TODO: add harness scenario with >3 SSIDs to validate placeholder pruning ordering.
+	# Emit pruning marker (names of removed placeholder tokens) for tools if any were trimmed
+	# We only ever remove at most one of i=<none>, a=<none>, then (rare) one sc=*
+	# Reconstruct expected placeholder set by presence of tokens; compare with initial flags
+	_pr_marker=""
+	# Determine which placeholders still present
+	_has_i=0
+	_has_a=0
+	_has_sc=0
+	for _t in "$@"; do
+		case "$_t" in
+		i=*) _has_i=1 ;;
+		a=*) _has_a=1 ;;
+		sc=*) _has_sc=1 ;;
+		esac
+	done
+	# If overlay enabled originally we had i and a placeholders (or dynamic future values)
+	if [ "$CFG_ACTIVITY_OVERLAY" = "1" ]; then
+		[ $_has_i -eq 0 ] && _pr_marker="${_pr_marker}${_pr_marker:+,}i"
+		[ $_has_a -eq 0 ] && _pr_marker="${_pr_marker}${_pr_marker:+,}a"
+	fi
+	# If sidechannel enabled originally we had sc
+	if [ "$CFG_SIDECHANNEL_ENABLE" = "1" ] && [ $_has_sc -eq 0 ]; then
+		_pr_marker="${_pr_marker}${_pr_marker:+,}sc"
+	fi
+	if [ -n "$_pr_marker" ]; then
+		printf 'pruned=%s\n' "$_pr_marker" >/tmp/nrsyncd_state/pruning 2>/dev/null || true
+	else
+		: >/tmp/nrsyncd_state/pruning 2>/dev/null || true
 	fi
 	# ---------------------------------------------------------------------------
 

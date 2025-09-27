@@ -1,0 +1,3 @@
+# Scenario: prune_three
+# Three SSIDs + overlay + sidechannel cause exactly one overflow (9 tokens)
+# Expect pruning of i=<none> only (retain a=<none>, sc=)

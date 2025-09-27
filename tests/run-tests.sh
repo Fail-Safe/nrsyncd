@@ -21,6 +21,12 @@ export STATE_DIR
 # Overlay contract: v2 only (ordering + version bump)
 "$DIR/scripts/scenario_overlay_v2_contract.sh"
 
+# Pruning scenario (three SSIDs triggers single placeholder prune)
+"$DIR/scripts/scenario_prune_three.sh"
+
+# Multi-prune scenario (four SSIDs triggers pruning of i=<none> and a=<none>)
+"$DIR/scripts/scenario_prune_four.sh"
+
 # SSID edge cases
 "$DIR/scripts/scenario_space_ssid.sh"
 "$DIR/scripts/scenario_quotes.sh"

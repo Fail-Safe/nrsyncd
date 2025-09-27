@@ -1,0 +1,4 @@
+# Scenario: prune_four
+# Four SSIDs + overlay + sidechannel produce two over-cap tokens (10 total)
+# Expect pruning of i=<none> then a=<none>; sc= retained (final 8 tokens)
+# The umdns.browse file represents the final pruned state (placeholders removed).

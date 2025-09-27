@@ -1,0 +1,4 @@
+wlan0="00:11:22:33:44:00 main 1 2412 20 2412 Zarf_nomap"
+wlan1="00:11:22:33:44:01 main 1 2412 20 2412 Zarf_nomap"
+wlan2="00:11:22:33:44:02 main 1 2412 20 2412 Zarf_nomap"
+wlan3="00:11:22:33:44:03 main 1 2412 20 2412 Zarf_nomap"
