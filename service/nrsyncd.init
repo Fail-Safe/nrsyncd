@@ -299,6 +299,72 @@ start_service() {
 		# Token name: sc=proto:port (no secrets). Appends after v/c/h and overlay extras.
 		set -- "$@" sc="${_sc_proto}:${_sc_port}"
 	fi
+
+	# ---------------------------------------------------------------------------
+	# Defensive TXT token cap handling:
+	# BusyBox umdns appears to silently drop TXT records beyond an internal cap
+	# (empirically observed at 8). With overlay placeholders enabled we may have:
+	#   SSID1..N (>=1) + v= + c= + h= + a=<none> + i=<none> + sc=  => 3 + 5 = 8 (OK) or
+	#   4 SSIDs -> 4 + 5 = 9 (overflow) etc.
+	# To preserve discoverability of the sidechannel (sc=), we trim lowest-value
+	# placeholder overlay tokens first when we exceed 8 tokens total. Priority:
+	#   1) Keep all SSIDn= (never removed)
+	#   2) Keep v= c= h=
+	#   3) Keep sc= (if sidechannel enabled)
+	#   4) Keep a= then i= (drop i=<none> first, then a=<none> if still over)
+	# If real (non-placeholder) overlay tokens are present in future they should
+	# not be trimmed; current implementation only uses <none> placeholders.
+	TXT_CAP=8
+	# Count total tokens
+	_tok_count=0
+	for _t in "$@"; do
+		_tok_count=$((_tok_count + 1))
+	done
+	if [ $_tok_count -gt $TXT_CAP ]; then
+		_pruned=0
+		newlist=""
+		# Helper to rebuild list while skipping one occurrence
+		prune_once() {
+			_skip_tok="$1"; _done=0; newlist=""; for _t in "$@"; do :; done
+		}
+		# First attempt: drop i=<none>
+		if printf '%s\n' "$@" | grep -q '^i=<none>$'; then
+			for _t in "$@"; do
+				if [ "$_t" = 'i=<none>' ] && [ $_pruned -eq 0 ]; then _pruned=1; continue; fi
+				set -- "$@"
+			newlist="${newlist}${newlist:+ }$_t"
+			done
+			# Re-evaluate list into positional parameters
+			# shellcheck disable=SC2086
+			set -- $newlist
+		fi
+		# Recount; if still over cap, drop a=<none>
+		_tok_count=0; for _t in "$@"; do _tok_count=$((_tok_count + 1)); done
+		if [ $_tok_count -gt $TXT_CAP ] && printf '%s\n' "$@" | grep -q '^a=<none>$'; then
+			_pruned2=0; newlist=""
+			for _t in "$@"; do
+				if [ "$_t" = 'a=<none>' ] && [ $_pruned2 -eq 0 ]; then _pruned2=1; continue; fi
+				newlist="${newlist}${newlist:+ }$_t"
+			done
+			# shellcheck disable=SC2086
+			set -- $newlist
+		fi
+		# Final recount; if still over cap (rare: very high SSID count) drop sc=
+		_tok_count=0; for _t in "$@"; do _tok_count=$((_tok_count + 1)); done
+		if [ $_tok_count -gt $TXT_CAP ] && printf '%s\n' "$@" | grep -q '^sc='; then
+			_pruned3=0; newlist=""
+			for _t in "$@"; do
+				case "$_t" in sc=*) if [ $_pruned3 -eq 0 ]; then _pruned3=1; continue; fi;; esac
+				newlist="${newlist}${newlist:+ }$_t"
+			done
+			# shellcheck disable=SC2086
+			set -- $newlist
+		fi
+		# Log pruning decision (once)
+		if [ "$CFG_DEBUG" = "1" ]; then
+			logger -t "${NAME}" -p daemon.debug "TXT pruning applied: final_count=$_tok_count cap=$TXT_CAP args=$(printf '%s ' "$@")"
+		fi
+	fi
 	# ---------------------------------------------------------------------------
 
 	# Write deterministic ordinal map and placeholder overlay tokens (if overlay enabled)
