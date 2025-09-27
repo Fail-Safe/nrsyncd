@@ -1,0 +1,211 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Minimal sidechannel stub for nrsyncd
+# - Discovers peers via mDNS (advertised by init via sc=proto:port)
+# - Listens on UDP/TCP (proto from NRSYNCD_SC_PROTO) for small JSON frames
+# - Stores last message per peer in /tmp/nrsyncd_state/sidechannel_peers
+# - No privileges required; relies on procd supervision
+# NOTE: This is a prototype shell implementation for portability; a C daemon can replace it later.
+
+set -eu
+
+STATE_DIR=${NRSYNCD_SC_STATE_DIR:-/tmp/nrsyncd_state}
+PROTO=${NRSYNCD_SC_PROTO:-udp}
+PORT=${NRSYNCD_SC_PORT:-32026}
+BIND_ADDR=${NRSYNCD_SC_BIND:-0.0.0.0}
+PSK=${NRSYNCD_SC_PSK:-}
+SC_DEBUG=${NRSYNCD_SC_DEBUG:-0}
+DISABLE_SELF_HB=${NRSYNCD_SC_DISABLE_SELF_HEARTBEAT:-0}
+# Normalize hostname to lowercase (for consistent filenames); allow override for tests
+if [ -n "${NRSYNCD_SC_SELF_ID:-}" ]; then
+	SELF_ID=$(printf '%s' "$NRSYNCD_SC_SELF_ID" | tr 'A-Z' 'a-z')
+else
+	_hn=$(cat /proc/sys/kernel/hostname 2>/dev/null || echo unknown)
+	SELF_ID=$(printf '%s' "$_hn" | tr 'A-Z' 'a-z')
+fi
+
+mkdir -p "$STATE_DIR/sidechannel_peers" 2>/dev/null || true
+
+log() {
+	# Always log via syslog for discoverability in logread
+	logger -t nrsyncd_sc -p daemon.info -- "$*"
+}
+
+debug_log() {
+	if [ "$SC_DEBUG" = "1" ]; then
+		logger -t nrsyncd_sc -p daemon.debug -- "$*"
+	fi
+	return 0
+}
+
+validate_and_store() {
+	in="$1"
+	# Optional PSK enforcement: expect JSON with field psk if PSK set
+	if [ -n "$PSK" ]; then
+		# Extract psk value in a whitespace-tolerant way (no jq dependency)
+		pskv=$(printf '%s' "$in" | sed -n 's/.*"psk"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+		if [ "$pskv" != "$PSK" ]; then
+			log "PSK mismatch; dropping"
+			return
+		fi
+	fi
+	# Try to extract peer id and payload minimally
+	peer=""
+	case "$in" in *"\"id\":"*) peer=$(printf '%s' "$in" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1) ;; esac
+	# Normalize to lowercase for consistency (hostnames and most labels are case-insensitive)
+	[ -n "$peer" ] && peer=$(printf '%s' "$peer" | tr 'A-Z' 'a-z')
+	[ -z "$peer" ] && peer=unknown
+	file="$STATE_DIR/sidechannel_peers/$peer.json"
+	# Cap size to 8KB
+	printf '%s' "$in" | head -c 8192 >"$file.tmp" 2>/dev/null || true
+	mv -f "$file.tmp" "$file" 2>/dev/null || cp "$file.tmp" "$file" 2>/dev/null || true
+	debug_log "stored frame for id=$peer (len=$(printf '%s' "$in" | wc -c))"
+}
+
+# Ingest mode: invoked per datagram/connection by socat SYSTEM handler
+if [ "${1:-}" = "--ingest" ]; then
+	# Read entire stdin without requiring newline
+	if buf=$(cat 2>/dev/null); then
+		# shellcheck disable=SC2154  # variables provided via environment from parent
+		:
+	else
+		buf=""
+	fi
+	validate_and_store "${buf:-}"
+	# Always succeed to keep handler simple in tests and socat SYSTEM path
+	exit 0
+fi
+
+# Simple UDP listener using nc if available; otherwise, busybox nc
+listen_udp() {
+	# Prefer socat (invoking per-datagram ingest), then ncat, then nc
+	if command -v socat >/dev/null 2>&1; then
+		log "backend: socat (udp :$PORT)"
+		# Use inherited environment; avoid embedding values (quoting pitfalls)
+		handler="/usr/bin/nrsyncd_sidechannel --ingest"
+		if [ -n "$BIND_ADDR" ] && [ "$BIND_ADDR" != "0.0.0.0" ]; then
+			exec socat -u UDP-RECVFROM:"$PORT",ip="$BIND_ADDR",reuseaddr,fork SYSTEM:"$handler"
+		else
+			exec socat -u UDP-RECVFROM:"$PORT",reuseaddr,fork SYSTEM:"$handler"
+		fi
+	fi
+
+	if command -v ncat >/dev/null 2>&1; then
+		log "backend: ncat (udp :$PORT)"
+		if [ -n "$BIND_ADDR" ] && [ "$BIND_ADDR" != "0.0.0.0" ]; then
+			ncat --udp -l -p "$PORT" --recv-only -s "$BIND_ADDR" | while IFS= read -r line || [ -n "$line" ]; do validate_and_store "$line"; done
+		else
+			ncat --udp -l -p "$PORT" --recv-only | while IFS= read -r line || [ -n "$line" ]; do validate_and_store "$line"; done
+		fi
+		return
+	fi
+
+	if command -v nc >/dev/null 2>&1; then
+		help=$(nc -h 2>&1 || true)
+		case "$help" in *" -l "* | *"-l, --listen"*) has_l=1 ;; *) has_l=0 ;; esac
+		case "$help" in *" -u "* | *"--udp"*) has_u=1 ;; *) has_u=0 ;; esac
+		case "$help" in *" -p "* | *"--source-port"*) has_p=1 ;; *) has_p=0 ;; esac
+		case "$help" in *" -k "* | *"--keep-open"*) has_k=1 ;; *) has_k=0 ;; esac
+		if [ "$has_l" = 1 ] && [ "$has_u" = 1 ] && [ "$has_p" = 1 ]; then
+			log "backend: nc (udp :$PORT)"
+			if [ -n "$BIND_ADDR" ] && [ "$BIND_ADDR" != "0.0.0.0" ] && printf '%s' "$help" | grep -q ' -s '; then
+				cmd="nc -u -l -p \"$PORT\" -s \"$BIND_ADDR\""
+				[ "$has_k" = 1 ] && cmd="$cmd -k"
+			else
+				cmd="nc -u -l -p \"$PORT\""
+				[ "$has_k" = 1 ] && cmd="$cmd -k"
+			fi
+			# shellcheck disable=SC2086
+			sh -c "$cmd" | while IFS= read -r line || [ -n "$line" ]; do validate_and_store "$line"; done
+			return
+		fi
+		debug_log "nc present but lacks required UDP listen flags (-l/-u/-p)"
+	else
+		debug_log "nc not found"
+	fi
+
+	log "no suitable UDP listener (nc/ncat/socat); sidechannel receive disabled"
+	sleep 3600
+}
+
+# Simple TCP listener
+listen_tcp() {
+	if command -v socat >/dev/null 2>&1; then
+		log "backend: socat (tcp :$PORT)"
+		# Use inherited environment; avoid embedding values (quoting pitfalls)
+		handler="/usr/bin/nrsyncd_sidechannel --ingest"
+		if [ -n "$BIND_ADDR" ] && [ "$BIND_ADDR" != "0.0.0.0" ]; then
+			exec socat -u TCP-LISTEN:"$PORT",bind="$BIND_ADDR",reuseaddr,fork SYSTEM:"$handler"
+		else
+			exec socat -u TCP-LISTEN:"$PORT",reuseaddr,fork SYSTEM:"$handler"
+		fi
+	fi
+	if command -v ncat >/dev/null 2>&1; then
+		log "backend: ncat (tcp :$PORT)"
+		if [ -n "$BIND_ADDR" ] && [ "$BIND_ADDR" != "0.0.0.0" ]; then
+			ncat -l -p "$PORT" --keep-open -s "$BIND_ADDR" | while IFS= read -r line || [ -n "$line" ]; do validate_and_store "$line"; done
+		else
+			ncat -l -p "$PORT" --keep-open | while IFS= read -r line || [ -n "$line" ]; do validate_and_store "$line"; done
+		fi
+		return
+	fi
+	if command -v nc >/dev/null 2>&1; then
+		help=$(nc -h 2>&1 || true)
+		case "$help" in *" -l "* | *"-l, --listen"*) has_l=1 ;; *) has_l=0 ;; esac
+		case "$help" in *" -p "* | *"--source-port"*) has_p=1 ;; *) has_p=0 ;; esac
+		case "$help" in *" -k "* | *"--keep-open"*) has_k=1 ;; *) has_k=0 ;; esac
+		if [ "$has_l" = 1 ] && [ "$has_p" = 1 ]; then
+			log "backend: nc (tcp :$PORT)"
+			if [ -n "$BIND_ADDR" ] && [ "$BIND_ADDR" != "0.0.0.0" ] && printf '%s' "$help" | grep -q ' -s '; then
+				cmd="nc -l -p \"$PORT\" -s \"$BIND_ADDR\""
+				[ "$has_k" = 1 ] && cmd="$cmd -k"
+			else
+				cmd="nc -l -p \"$PORT\""
+				[ "$has_k" = 1 ] && cmd="$cmd -k"
+			fi
+			# shellcheck disable=SC2086
+			sh -c "$cmd" | while IFS= read -r line || [ -n "$line" ]; do validate_and_store "$line"; done
+			return
+		fi
+		debug_log "nc present but lacks required TCP listen flags (-l/-p)"
+	else
+		debug_log "nc not found"
+	fi
+	log "no suitable TCP listener (nc/ncat/socat); sidechannel receive disabled"
+	sleep 3600
+}
+
+announce_loop() {
+	# Send a tiny heartbeat frame periodically to known peers if needed later.
+	# Currently a no-op; placeholder for future peer exchange.
+	while :; do
+		# store self heartbeat
+		printf '{"id":"%s","ts":%s}\n' "$SELF_ID" "$(date +%s)" >"$STATE_DIR/sidechannel_peers/$SELF_ID.json.tmp" 2>/dev/null || true
+		mv -f "$STATE_DIR/sidechannel_peers/$SELF_ID.json.tmp" "$STATE_DIR/sidechannel_peers/$SELF_ID.json" 2>/dev/null || true
+		sleep 30
+	done
+}
+
+run_listener() {
+	case "$PROTO" in
+	udp) listen_udp ;;
+	tcp) listen_tcp ;;
+	*)
+		log "Unknown proto: $PROTO"
+		sleep 300
+		;;
+	esac
+}
+
+# Start background heartbeat
+[ "$DISABLE_SELF_HB" = 1 ] || announce_loop &
+
+# Startup log for visibility
+log "starting (proto=$PROTO port=$PORT bind=$BIND_ADDR debug=$SC_DEBUG state_dir=$STATE_DIR)"
+
+# Main loop: restart listener if it exits
+while :; do
+	run_listener
+	log "listener exited; restarting in 2s"
+	sleep 2
+done
