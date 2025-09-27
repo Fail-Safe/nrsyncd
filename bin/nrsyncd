@@ -9,14 +9,25 @@ UMDNS_REFRESH_INTERVAL=30
 UMDNS_SETTLE_DELAY=0
 
 num_re='^[0-9][0-9]*$'
-_ival=${NRSYNCD_UPDATE_INTERVAL:-$RRM_NR_UPDATE_INTERVAL}; [ -n "$_ival" ] && echo "$_ival" | grep -qE "$num_re" && UPDATE_INTERVAL=$_ival
-_jval=${NRSYNCD_JITTER_MAX:-$RRM_NR_JITTER_MAX}; [ -n "$_jval" ] && echo "$_jval" | grep -qE "$num_re" && JITTER_MAX=$_jval
-_uival=${NRSYNCD_UMDNS_REFRESH_INTERVAL:-$RRM_NR_UMDNS_REFRESH_INTERVAL}; [ -n "$_uival" ] && echo "$_uival" | grep -qE "$num_re" && UMDNS_REFRESH_INTERVAL=$_uival
-_usd=${NRSYNCD_UMDNS_SETTLE_DELAY:-$RRM_NR_UMDNS_SETTLE_DELAY}; [ -n "$_usd" ] && echo "$_usd" | grep -qE "$num_re" && UMDNS_SETTLE_DELAY=$_usd
-DEBUG=0; _dbg=${NRSYNCD_DEBUG:-$RRM_NR_DEBUG}; [ "$_dbg" = 1 ] && DEBUG=1
+_ival=${NRSYNCD_UPDATE_INTERVAL:-$RRM_NR_UPDATE_INTERVAL}
+[ -n "$_ival" ] && echo "$_ival" | grep -qE "$num_re" && UPDATE_INTERVAL=$_ival
+_jval=${NRSYNCD_JITTER_MAX:-$RRM_NR_JITTER_MAX}
+[ -n "$_jval" ] && echo "$_jval" | grep -qE "$num_re" && JITTER_MAX=$_jval
+_uival=${NRSYNCD_UMDNS_REFRESH_INTERVAL:-$RRM_NR_UMDNS_REFRESH_INTERVAL}
+[ -n "$_uival" ] && echo "$_uival" | grep -qE "$num_re" && UMDNS_REFRESH_INTERVAL=$_uival
+_usd=${NRSYNCD_UMDNS_SETTLE_DELAY:-$RRM_NR_UMDNS_SETTLE_DELAY}
+[ -n "$_usd" ] && echo "$_usd" | grep -qE "$num_re" && UMDNS_SETTLE_DELAY=$_usd
+DEBUG=0
+_dbg=${NRSYNCD_DEBUG:-$RRM_NR_DEBUG}
+[ "$_dbg" = 1 ] && DEBUG=1
+
+# Overlay controls (optional)
+OVERLAY_ENABLE=${NRSYNCD_ACTIVITY_OVERLAY:-$RRM_NR_ACTIVITY_OVERLAY}
+ORDINAL_MAP_PATH=${NRSYNCD_ORDINAL_MAP:-$RRM_NR_ORDINAL_MAP}
+OVERLAY_TOKENS_PATH=${NRSYNCD_OVERLAY_TOKENS:-/tmp/nrsyncd_overlay_tokens}
 
 # Early explicit log (even before debug()) so harness can detect startup
-[ -n "$LOG_FILE" ] && printf '%s %s\n' "$(date +%s 2>/dev/null)" "$NAME:START:pid=$$" >> "$LOG_FILE" 2>/dev/null
+[ -n "$LOG_FILE" ] && printf '%s %s\n' "$(date +%s 2>/dev/null)" "$NAME:START:pid=$$" >>"$LOG_FILE" 2>/dev/null
 
 # Bounded cycles (test harness)
 MAX_CYCLES=0
@@ -43,9 +54,14 @@ hm_create() {
 	echo "$d"
 }
 hashmap=$(hm_create)
-state_dir=/tmp/nrsyncd_state; [ -d "$state_dir" ] || mkdir -p "$state_dir" 2>/dev/null
+state_dir=/tmp/nrsyncd_state
+[ -d "$state_dir" ] || mkdir -p "$state_dir" 2>/dev/null
 
-debug() { [ "$DEBUG" = 1 ] || return; command -v logger >/dev/null 2>&1 && logger -t "$NAME" -p daemon.debug "$*"; [ -n "$LOG_FILE" ] && printf '%s %s\n' "$(date +%s 2>/dev/null)" "$NAME:DEBUG:$*" >> "$LOG_FILE" 2>/dev/null; }
+debug() {
+	[ "$DEBUG" = 1 ] || return
+	command -v logger >/dev/null 2>&1 && logger -t "$NAME" -p daemon.debug "$*"
+	[ -n "$LOG_FILE" ] && printf '%s %s\n' "$(date +%s 2>/dev/null)" "$NAME:DEBUG:$*" >>"$LOG_FILE" 2>/dev/null
+}
 
 # cleanup trap (shellcheck SC2329 note: invoked via trap EXIT)
 cleanup() {
@@ -56,9 +72,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM QUIT
 
-hm_put(){ printf '%s\n' "$3" > "$1/$2"; }
-hm_get(){ [ -f "$1/$2" ] && cat "$1/$2"; }
-rand_jitter(){ [ "$JITTER_MAX" -gt 0 ] 2>/dev/null || { echo 0; return; }; v=$(dd if=/dev/urandom bs=2 count=1 2>/dev/null | od -An -tu2 | tr -d ' '); [ -z "$v" ] && echo 0 || echo $(( v % (JITTER_MAX + 1) )); }
+hm_put() { printf '%s\n' "$3" >"$1/$2"; }
+hm_get() { [ -f "$1/$2" ] && cat "$1/$2"; }
+# Minimal JSON string escaper: escapes backslash and double quote
+json_escape() {
+	# shellcheck disable=SC2001
+	esc=$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/\"/\\\"/g')
+	printf '%s' "$esc"
+}
+rand_jitter() {
+	[ "$JITTER_MAX" -gt 0 ] 2>/dev/null || {
+		echo 0
+		return
+	}
+	v=$(dd if=/dev/urandom bs=2 count=1 2>/dev/null | od -An -tu2 | tr -d ' ')
+	[ -z "$v" ] && echo 0 || echo $((v % (JITTER_MAX + 1)))
+}
 
 first_run=1
 last_umdns_update=0
@@ -75,14 +104,19 @@ nr_sets_sent=0
 nr_sets_suppressed=0
 remote_entries_merged=0
 baseline_sent_hashes="" # space-delimited list of ssid_hash values already baseline-pushed
-baseline_ssids=0 # count of distinct SSIDs baseline-delivered this process
-remote_unique_cycle=0 # unique remote TXT entries seen in the most recent cycle
-remote_unique_total=0 # cumulative distinct remote TXT entries since start
+baseline_ssids=0        # count of distinct SSIDs baseline-delivered this process
+remote_unique_cycle=0   # unique remote TXT entries seen in the most recent cycle
+remote_unique_total=0   # cumulative distinct remote TXT entries since start
 remote_seen_file="$state_dir/remote_seen"
 [ -n "$neighbor_counts" ] || neighbor_counts="" # per-interface neighbor counts (post self-filter)
-[ -n "$nr_set_failures" ] || nr_set_failures=0 # failures from rrm_nr_set ubus call
-[ -f "$remote_seen_file" ] || { umask 077; : > "$remote_seen_file"; }
+[ -n "$nr_set_failures" ] || nr_set_failures=0  # failures from rrm_nr_set ubus call
+[ -f "$remote_seen_file" ] || {
+	umask 077
+	: >"$remote_seen_file"
+}
 debug "startup: interval=$UPDATE_INTERVAL jitter=$JITTER_MAX umdns=$UMDNS_REFRESH_INTERVAL max_cycles=$MAX_CYCLES"
+jf=$(command -v jsonfilter 2>/dev/null || true)
+[ -n "$jf" ] && debug "using_jsonfilter: $jf"
 
 # Defensive positional argument handling:
 # The init script passes SSIDn=... arguments followed by optional meta keys
@@ -94,8 +128,8 @@ ssid_positional_count=0
 if [ "$#" -gt 0 ]; then
 	for _arg in "$@"; do
 		case "$_arg" in
-			SSID[0-9]*=*) ssid_positional_count=$((ssid_positional_count+1)); ;;
-			*) : ;; # ignore non-SSID meta tokens
+		SSID[0-9]*=*) ssid_positional_count=$((ssid_positional_count + 1)) ;;
+		*) : ;; # ignore non-SSID meta tokens
 		esac
 	done
 fi
@@ -103,7 +137,13 @@ fi
 # Source shared helpers if available else supply minimal fallbacks (single block)
 if [ -f /lib/nrsyncd_common.sh ]; then . /lib/nrsyncd_common.sh 2>/dev/null || true; fi
 if ! type normalize_iflist >/dev/null 2>&1; then
-	normalize_iflist() { lst="$1"; [ -z "$lst" ] && return 0; lst=$(printf '%s' "$lst" | tr ',\t' '  ' | tr -s ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' '); lst=${lst# }; printf '%s' "$lst"; };
+	normalize_iflist() {
+		lst="$1"
+		[ -z "$lst" ] && return 0
+		lst=$(printf '%s' "$lst" | tr ',\t' '  ' | tr -s ' ' '\n' | sed '/^$/d' | sort -u | tr '\n' ' ')
+		lst=${lst# }
+		printf '%s' "$lst"
+	}
 fi
 if ! type rrm_get_own_quick >/dev/null 2>&1; then
 	rrm_get_own_quick() {
@@ -112,7 +152,7 @@ if ! type rrm_get_own_quick >/dev/null 2>&1; then
 		out=$(ubus call "hostapd.$_ifc" rrm_nr_get_own 2>/dev/null) || return 1
 		[ -n "$out" ] && printf '%s' "$out"
 		return 0
-	};
+	}
 fi
 
 # Apply normalization to initial env-provided skip list
@@ -120,7 +160,7 @@ if [ -n "$skip_ifaces" ]; then
 	skip_ifaces=$(normalize_iflist "$skip_ifaces")
 fi
 
-write_state(){
+write_state() {
 	umask 077
 	{
 		echo "update_interval=$UPDATE_INTERVAL"
@@ -133,12 +173,15 @@ write_state(){
 		echo "cycle=$CYCLE_COUNT"
 		echo "last_update_time=$last_update_time"
 		echo "primary_service=nrsyncd_v1"
-		[ "$ssid_positional_count" -gt 0 ] && echo "initial_positional_ssids=$ssid_positional_count"
-	} > "$runtime_state_file.tmp" 2>/dev/null && mv "$runtime_state_file.tmp" "$runtime_state_file" 2>/dev/null
+		if [ "$ssid_positional_count" -gt 0 ]; then
+			echo "initial_positional_ssids=$ssid_positional_count"
+		fi
+	} >"$runtime_state_file.tmp" 2>/dev/null
+	mv "$runtime_state_file.tmp" "$runtime_state_file" 2>/dev/null
 }
 
 metrics_file=/tmp/nrsyncd_metrics
-write_metrics(){
+write_metrics() {
 	umask 077
 	# Derive suppression ratio (percentage of potential per-iface updates suppressed as no-change)
 	total_updates=$((nr_sets_sent + nr_sets_suppressed))
@@ -162,24 +205,33 @@ write_metrics(){
 		echo "nr_set_failures=$nr_set_failures"
 		# Per-interface neighbor counts (post self-filter sizing)
 		for nc in $neighbor_counts; do
-			ifc=${nc%%:*}; cnt=${nc#*:}; [ -n "$ifc" ] && echo "neighbor_count_${ifc}=$cnt"
+			ifc=${nc%%:*}
+			cnt=${nc#*:}
+			[ -n "$ifc" ] && echo "neighbor_count_${ifc}=$cnt"
 		done
-	} > "$metrics_file.tmp" 2>/dev/null && mv "$metrics_file.tmp" "$metrics_file" 2>/dev/null
+		# Overlay classification (if computed)
+		[ -n "$overlay_active_ordinals" ] && echo "overlay_active_ordinals=$overlay_active_ordinals"
+		[ -n "$overlay_inactive_ordinals" ] && echo "overlay_inactive_ordinals=$overlay_inactive_ordinals"
+	} >"$metrics_file.tmp" 2>/dev/null && mv "$metrics_file.tmp" "$metrics_file" 2>/dev/null
 }
 
 # shellcheck disable=SC2329
-reload_config(){
-	v=$(uci -q get nrsyncd.global.update_interval 2>/dev/null || uci -q get rrm_nr.global.update_interval 2>/dev/null); echo "$v" | grep -qE '^[0-9]+' && UPDATE_INTERVAL=$v
-	v=$(uci -q get nrsyncd.global.jitter_max 2>/dev/null || uci -q get rrm_nr.global.jitter_max 2>/dev/null); echo "$v" | grep -qE '^[0-9]+' && JITTER_MAX=$v
-	v=$(uci -q get nrsyncd.global.umdns_refresh_interval 2>/dev/null || uci -q get rrm_nr.global.umdns_refresh_interval 2>/dev/null); echo "$v" | grep -qE '^[0-9]+' && UMDNS_REFRESH_INTERVAL=$v
-	v=$(uci -q get nrsyncd.global.umdns_settle_delay 2>/dev/null || uci -q get rrm_nr.global.umdns_settle_delay 2>/dev/null); echo "$v" | grep -qE '^[0-9]+' && UMDNS_SETTLE_DELAY=$v
+reload_config() {
+	v=$(uci -q get nrsyncd.global.update_interval 2>/dev/null || uci -q get rrm_nr.global.update_interval 2>/dev/null)
+	echo "$v" | grep -qE '^[0-9]+' && UPDATE_INTERVAL=$v
+	v=$(uci -q get nrsyncd.global.jitter_max 2>/dev/null || uci -q get rrm_nr.global.jitter_max 2>/dev/null)
+	echo "$v" | grep -qE '^[0-9]+' && JITTER_MAX=$v
+	v=$(uci -q get nrsyncd.global.umdns_refresh_interval 2>/dev/null || uci -q get rrm_nr.global.umdns_refresh_interval 2>/dev/null)
+	echo "$v" | grep -qE '^[0-9]+' && UMDNS_REFRESH_INTERVAL=$v
+	v=$(uci -q get nrsyncd.global.umdns_settle_delay 2>/dev/null || uci -q get rrm_nr.global.umdns_settle_delay 2>/dev/null)
+	echo "$v" | grep -qE '^[0-9]+' && UMDNS_SETTLE_DELAY=$v
 	# Preserve prior DEBUG state unless config explicitly sets 0 or 1
 	prev_debug=$DEBUG
 	dbg=$(uci -q get nrsyncd.global.debug 2>/dev/null || uci -q get rrm_nr.global.debug 2>/dev/null)
 	case "$dbg" in
-		1) DEBUG=1 ;;
-		0) DEBUG=0 ;;
-		*) DEBUG=$prev_debug ;;
+	1) DEBUG=1 ;;
+	0) DEBUG=0 ;;
+	*) DEBUG=$prev_debug ;;
 	esac
 	lst=$(uci -q get nrsyncd.global.skip_ifaces 2>/dev/null || uci -q get rrm_nr.global.skip_ifaces 2>/dev/null)
 	[ -n "$lst" ] || lst=$(uci -q show nrsyncd.global 2>/dev/null | sed -n "s/^nrsyncd.global.skip_iface='\(.*\)'$/\1/p" | tr '\n' ' ')
@@ -201,39 +253,50 @@ reload_config(){
 }
 
 # shellcheck disable=SC2329
-handle_hup(){
+handle_hup() {
 	old="$UPDATE_INTERVAL/$JITTER_MAX/$UMDNS_REFRESH_INTERVAL"
 	reload_config
 	new="$UPDATE_INTERVAL/$JITTER_MAX/$UMDNS_REFRESH_INTERVAL"
 	command -v logger >/dev/null 2>&1 && logger -t "$NAME" -p daemon.info "Reload (SIGHUP): $old -> $new"
 	# Force at least one fresh push after reload by clearing baseline & last_update time
-	baseline_sent_hashes=""; last_update_time=0
+	baseline_sent_hashes=""
+	last_update_time=0
 	POST_RELOAD_FORCE=1
-	do_updates; CYCLE_COUNT=$((CYCLE_COUNT+1)); write_state
+	do_updates
+	CYCLE_COUNT=$((CYCLE_COUNT + 1))
+	write_state
 	[ -n "$sleep_pid" ] && [ -d /proc/"$sleep_pid" ] && kill -INT "$sleep_pid" 2>/dev/null || true
 }
 grep -q 'updated list=' /dev/null 2>&1 || true # keep test pattern reference
 trap handle_hup HUP
 
-handle_usr1(){
+handle_usr1() {
 	command -v logger >/dev/null 2>&1 && logger -t "$NAME" -p daemon.info "Manual refresh (SIGUSR1)"
-	do_updates; CYCLE_COUNT=$((CYCLE_COUNT+1)); write_state; write_metrics
+	do_updates
+	CYCLE_COUNT=$((CYCLE_COUNT + 1))
+	write_state
+	write_metrics
 }
-handle_usr2(){
+handle_usr2() {
 	ts=$(date +%s 2>/dev/null)
 	[ -f "$metrics_file" ] && cp "$metrics_file" "${metrics_file}.${ts}" 2>/dev/null || true
-	cache_hits=0; cache_misses=0; nr_sets_sent=0; nr_sets_suppressed=0; remote_entries_merged=0
-	remote_unique_cycle=0; remote_unique_total=0
+	cache_hits=0
+	cache_misses=0
+	nr_sets_sent=0
+	nr_sets_suppressed=0
+	remote_entries_merged=0
+	remote_unique_cycle=0
+	remote_unique_total=0
 	neighbor_counts=""
 	# Reset seen file (remote uniqueness cumulative set)
-	[ -n "$remote_seen_file" ] && : > "$remote_seen_file" 2>/dev/null || true
+	[ -n "$remote_seen_file" ] && : >"$remote_seen_file" 2>/dev/null || true
 	command -v logger >/dev/null 2>&1 && logger -t "$NAME" -p daemon.info "Metrics reset (SIGUSR2)"
 	write_metrics
 }
 trap handle_usr1 USR1
 trap handle_usr2 USR2
 
-build_mapping(){
+build_mapping() {
 	hostapd_members=$(ubus list hostapd.* 2>/dev/null | sed 's/^hostapd.//')
 	[ -z "$hostapd_members" ] && return
 	for i in $hostapd_members; do
@@ -247,14 +310,18 @@ build_mapping(){
 	done
 }
 
-do_updates(){
+do_updates() {
 	# First run: build SSID mapping (retry until we see interfaces)
 	if [ "$first_run" -eq 1 ]; then
-		build_mapping; [ -n "$hostapd_members" ] && first_run=0
+		build_mapping
+		[ -n "$hostapd_members" ] && first_run=0
 	fi
-	now=$(date +%s 2>/dev/null); [ -z "$now" ] && now=0
+	now=$(date +%s 2>/dev/null)
+	[ -z "$now" ] && now=0
 	if [ $((now - last_umdns_update)) -ge "$UMDNS_REFRESH_INTERVAL" ]; then
-		ubus call umdns update >/dev/null 2>&1; last_umdns_update=$now; [ "$UMDNS_SETTLE_DELAY" -gt 0 ] && sleep "$UMDNS_SETTLE_DELAY"
+		ubus call umdns update >/dev/null 2>&1
+		last_umdns_update=$now
+		[ "$UMDNS_SETTLE_DELAY" -gt 0 ] && sleep "$UMDNS_SETTLE_DELAY"
 	fi
 	[ -z "$hostapd_members" ] && hostapd_members=$(ubus list hostapd.* 2>/dev/null | sed 's/^hostapd.//')
 	[ -z "$hostapd_members" ] && return
@@ -262,33 +329,38 @@ do_updates(){
 	# Pass 1: collect per-interface own NR (single ubus call per iface) & build SSID membership map file
 	valdir=$(mktemp -d 2>/dev/null) || valdir=/tmp/nrsyncd_vals.$$ && mkdir -p "$valdir"
 	ssid_map="$valdir/ssid_map"
-	: > "$ssid_map"
+	: >"$ssid_map"
 	for ifc in $hostapd_members; do
 		ssid=$(hm_get "$hashmap" "$ifc")
 		[ -z "$ssid" ] && continue
 		v_json=$(rrm_get_own_quick "$ifc") || continue
 		v_bssid=$(echo "$v_json" | jsonfilter -e '$.value[0]' 2>/dev/null)
-		v_ssid=$(echo  "$v_json" | jsonfilter -e '$.value[1]' 2>/dev/null)
-		v_hex=$(echo   "$v_json" | jsonfilter -e '$.value[2]' 2>/dev/null)
+		v_ssid=$(echo "$v_json" | jsonfilter -e '$.value[1]' 2>/dev/null)
+		v_hex=$(echo "$v_json" | jsonfilter -e '$.value[2]' 2>/dev/null)
 		if [ -n "$v_bssid" ] && [ -n "$v_ssid" ] && [ -n "$v_hex" ]; then
-			v="[\"$v_bssid\",\"$v_ssid\",\"$v_hex\"]"
-			printf '%s' "$v" > "$valdir/$ifc"
+			ebssid=$(json_escape "$v_bssid")
+			essid=$(json_escape "$v_ssid")
+			ehex=$(json_escape "$v_hex")
+			v="[\"$ebssid\",\"$essid\",\"$ehex\"]"
+			printf '%s' "$v" >"$valdir/$ifc"
 		else
 			:
 		fi
-		echo "$ssid|$ifc" >> "$ssid_map"
+		# Use a TAB delimiter to avoid collisions with typical SSID characters
+		printf '%s\t%s\n' "$ssid" "$ifc" >>"$ssid_map"
 	done
 
 	# Gather remote (mDNS) entries once
 	remote_tmp=$(mktemp 2>/dev/null) || remote_tmp=/tmp/nrsyncd_remote.$$
 	# Primary versioned service browse followed by legacy pre-rebrand fallback
-	ubus call umdns browse '{ "service":"_nrsyncd_v1._udp", "array": true }' 2>/dev/null | \
-		jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]' 2>/dev/null | sed -n 's/^SSID[0-9]*=//p' | sed 's/^ *//;s/ *$//' > "$remote_tmp" 2>/dev/null || true
-	[ -s "$remote_tmp" ] || ubus call umdns browse '{ "service":"_rrm_nr._udp", "array": true }' 2>/dev/null | \
-		jsonfilter -e '@["_rrm_nr._udp"][*].txt[*]' 2>/dev/null | sed -n 's/^SSID[0-9]*=//p' | sed 's/^ *//;s/ *$//' > "$remote_tmp" 2>/dev/null || true
+	ubus call umdns browse '{ "service":"_nrsyncd_v1._udp", "array": true }' 2>/dev/null |
+		jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]' 2>/dev/null | sed -n 's/^SSID[0-9]*=//p' | sed 's/^ *//;s/ *$//' >"$remote_tmp" 2>/dev/null || true
+	[ -s "$remote_tmp" ] || ubus call umdns browse '{ "service":"_rrm_nr._udp", "array": true }' 2>/dev/null |
+		jsonfilter -e '@["_rrm_nr._udp"][*].txt[*]' 2>/dev/null | sed -n 's/^SSID[0-9]*=//p' | sed 's/^ *//;s/ *$//' >"$remote_tmp" 2>/dev/null || true
 	# Count remote entries merged this cycle (additive cumulative counter)
 	if [ -s "$remote_tmp" ]; then
-		cnt=$(wc -l < "$remote_tmp" 2>/dev/null); [ -n "$cnt" ] && remote_entries_merged=$((remote_entries_merged + cnt))
+		cnt=$(wc -l <"$remote_tmp" 2>/dev/null)
+		[ -n "$cnt" ] && remote_entries_merged=$((remote_entries_merged + cnt))
 		# Derive unique remote entries for this cycle & update cumulative set (normalized)
 		unique_remote=$(sort -u "$remote_tmp" | sed '/^$/d')
 		remote_unique_cycle=$(printf '%s\n' "$unique_remote" | wc -l 2>/dev/null)
@@ -296,63 +368,112 @@ do_updates(){
 			while IFS= read -r rline; do
 				[ -z "$rline" ] && continue
 				norm=$(printf '%s' "$rline" | sed 's/  */ /g')
-				grep -Fqx -- "$norm" "$remote_seen_file" 2>/dev/null || echo "$norm" >> "$remote_seen_file"
+				grep -Fqx -- "$norm" "$remote_seen_file" 2>/dev/null || echo "$norm" >>"$remote_seen_file"
 			done <<EOF
 $unique_remote
 EOF
-			remote_unique_total=$(wc -l < "$remote_seen_file" 2>/dev/null)
+			remote_unique_total=$(wc -l <"$remote_seen_file" 2>/dev/null)
 		else
 			remote_unique_cycle=0
 		fi
 		debug "remote_entries: $cnt unique_cycle=$remote_unique_cycle unique_total=$remote_unique_total"
 	fi
 
-	# Unique list of SSIDs
-	ssid_list=$(cut -d'|' -f1 "$ssid_map" 2>/dev/null | sed '/^$/d' | sort -u)
-	if [ -z "$ssid_list" ]; then rm -rf "$valdir" "$remote_tmp"; return; fi
+	# Unique list of SSIDs (preserve spaces by using a list file and line-wise reads)
+	ssid_list_file="$valdir/ssid_list"
+	cut -f1 "$ssid_map" 2>/dev/null | sed '/^$/d' | sort -u >"$ssid_list_file"
+	if [ ! -s "$ssid_list_file" ]; then
+		rm -rf "$valdir" "$remote_tmp"
+		return
+	fi
 
 	# Prepare cache directory
-	cache_dir="$state_dir/group_cache"; [ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null
+	cache_dir="$state_dir/group_cache"
+	[ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null
 
-	for ssid in $ssid_list; do
+	while IFS= read -r ssid; do
+		# reset per-SSID accumulators to avoid bleed-through between iterations
+		list=""
+		compact=""
+		canon=""
 		# Build group interface membership for this SSID
-		group_ifcs=$(grep -E "^${ssid}\|" "$ssid_map" 2>/dev/null | cut -d'|' -f2)
+		# Escape SSID for safe usage in awk variable (-v s=...), handling embedded quotes/backslashes
+		ssid_awk=$(printf '%s' "$ssid" | sed 's/\\/\\\\/g; s/"/\\"/g')
+		group_ifcs=$(awk -F'\t' -v s="$ssid_awk" '$1==s {print $2}' "$ssid_map" 2>/dev/null)
 		# Build candidate list (other ifaces in same SSID + remote entries)
 		cand_tmp=$(mktemp 2>/dev/null) || cand_tmp=/tmp/nrsyncd_cand.$$
 		for gi in $group_ifcs; do
 			own_val=$(cat "$valdir/$gi" 2>/dev/null)
-			[ -n "$own_val" ] && printf '%s\n' "$own_val" >> "$cand_tmp"
+			[ -n "$own_val" ] && printf '%s\n' "$own_val" >>"$cand_tmp"
 		done
 		# remote entries appended
-		[ -s "$remote_tmp" ] && cat "$remote_tmp" >> "$cand_tmp"
+		[ -s "$remote_tmp" ] && cat "$remote_tmp" >>"$cand_tmp"
 		# If only one line and it belongs to the interface itself there will be no neighbors; remove self contribution later per iface.
-		[ ! -s "$cand_tmp" ] && { rm -f "$cand_tmp"; continue; }
+		[ ! -s "$cand_tmp" ] && {
+			rm -f "$cand_tmp"
+			continue
+		}
 		# De-dup via sort -u (still cheaper than per-iface ubus loops) – could be optimized later.
+		cand_count=$(wc -l <"$cand_tmp" 2>/dev/null)
 		unique=$(sort -u "$cand_tmp" | sed '/^$/d')
+		uniq_count=$(printf '%s\n' "$unique" | sed '/^$/d' | wc -l 2>/dev/null)
+		debug "group_build: ssid='$ssid' candidates=$cand_count unique=$uniq_count"
 		rm -f "$cand_tmp"
 		[ -z "$unique" ] && { continue; }
 		# Canonicalize, de-duplicate (by SSID+BSSID) and produce stable ordering (SSID then BSSID)
-		canon_tmp="$valdir/canon.$$"; : > "$canon_tmp"
+		canon_tmp="$valdir/canon.$$"
+		: >"$canon_tmp"
 		printf '%s\n' "$unique" | while IFS= read -r line; do
 			l=$(printf '%s' "$line" | sed 's/^ *//;s/ *$//')
 			[ -z "$l" ] && continue
 			printf '%s' "$l" | grep -q '^\[' || continue
-			core=$(printf '%s' "$l" | sed -E 's/^\[ *//; s/ *\]$//')
-			bssid=$(printf '%s' "$core" | awk -F',' '{print $1}' | sed 's/[" ]//g')
-			ssid_part=$(printf '%s' "$core" | awk -F',' '{print $2}')
-			hex=$(printf '%s' "$core" | awk -F',' '{print $3}' | sed 's/[" ]//g')
-			ssid_part=$(printf '%s' "$ssid_part" | sed 's/^ *//;s/ *$//')
-			ssid_clean=$(printf '%s' "$ssid_part" | sed 's/^"//;s/"$//')
-			[ -n "$bssid" ] && [ -n "$ssid_clean" ] && [ -n "$hex" ] && printf '["%s","%s","%s"]\n' "$bssid" "$ssid_clean" "$hex" >> "$canon_tmp"
+			# If this came from mDNS TXT (a JSON string containing a JSON array), quotes will be backslash-escaped
+			# like [\"00:11:...\",\"SSID \\\"Quote\\\" Test\",\"010203\"]. Unescape one level so it's a real JSON array.
+			# Only do this when the line clearly starts with an escaped quote after '[' to avoid altering our own properly formatted lines.
+			if printf '%s' "$l" | grep -q '^\[\\\"'; then
+				# Input is a JSON string of an array; convert to real JSON array by:
+				# 1) Temporarily mask inner escaped quotes (\\\") to @IN@
+				# 2) Unescape one level of array string quotes (\") -> "
+				# 3) Restore masked inner quotes back to \"
+				l=$(printf '%s' "$l" | sed -e 's/\\\\\"/@IN@/g' -e 's/\\\"/\"/g' -e 's/@IN@/\\\"/g')
+			fi
+			wrapped=$(printf '{"v":%s}' "$l")
+			debug "canon_line: $l"
+			debug "canon_wrapped: $wrapped"
+			bssid=$(printf '%s' "$wrapped" | jsonfilter -e '@.v[0]' 2>/dev/null)
+			ssid=$(printf '%s' "$wrapped" | jsonfilter -e '@.v[1]' 2>/dev/null)
+			hex=$(printf '%s' "$wrapped" | jsonfilter -e '@.v[2]' 2>/dev/null)
+			debug "canon_scan: bssid='${bssid:-<none>}' ssid='${ssid:-<none>}' hex='${hex:-<none>}'"
+			[ -z "$bssid" ] && continue
+			[ -z "$ssid" ] && continue
+			[ -z "$hex" ] && continue
+			ebssid=$(json_escape "$bssid")
+			essid=$(json_escape "$ssid")
+			ehex=$(json_escape "$hex")
+			printf '["%s","%s","%s"]\n' "$ebssid" "$essid" "$ehex" >>"$canon_tmp"
 		done
-		canon_sorted_tmp="$valdir/canon_sorted.$$"; : > "$canon_sorted_tmp"
+		canon_sorted_tmp="$valdir/canon_sorted.$$"
+		: >"$canon_sorted_tmp"
 		if [ -s "$canon_tmp" ]; then
-			awk 'BEGIN{FS="\""; OFS=""} /^\[/ { bssid=$2; ssid=$4; key=ssid"|"bssid; if(!seen[key]++){ printf "%s\t%s\t%s\n", ssid,bssid,$0 } }' "$canon_tmp" | \
-				sort -t '\t' -k1,1 -k2,2 | cut -f3- > "$canon_sorted_tmp"
+			# Extract keys using jsonfilter (robust to escaped quotes) and build sort keys
+			while IFS= read -r raw; do
+				[ -z "$raw" ] && continue
+				wrapped=$(printf '{"v":%s}' "$raw")
+				bssid=$(printf '%s' "$wrapped" | jsonfilter -e '@.v[0]' 2>/dev/null)
+				ssid=$(printf '%s' "$wrapped" | jsonfilter -e '@.v[1]' 2>/dev/null)
+				[ -z "$bssid" ] && continue
+				[ -z "$ssid" ] && continue
+				printf '%s\t%s\t%s\n' "$ssid" "$bssid" "$raw"
+			done <"$canon_tmp" |
+				sort -t '\t' -k1,1 -k2,2 | cut -f3- >"$canon_sorted_tmp"
 		fi
 		canon=$(cat "$canon_sorted_tmp" 2>/dev/null)
 		rm -f "$canon_tmp" "$canon_sorted_tmp" 2>/dev/null || true
-		[ -z "$canon" ] && { debug "group_build: ssid='$ssid' canonicalization produced empty set"; list="[]"; compact=""; }
+		[ -z "$canon" ] && {
+			debug "group_build: ssid='$ssid' canonicalization produced empty set"
+			list="[]"
+			compact=""
+		}
 		if [ -z "$list" ] || [ -z "$canon" ]; then
 			compact=$(printf '%s\n' "$canon" | awk 'NF{ if(n)printf(","); printf("%s",$0); n=1 }')
 			[ -n "$compact" ] && list="[$compact]" || list="[]"
@@ -375,22 +496,29 @@ EOF
 			force_write=0
 		fi
 		if [ "$force_update_test" = 1 ] || [ "$new_norm" != "$old_norm" ] || [ "$force_write" = 1 ]; then
-			changed=1; cache_misses=$((cache_misses+1))
-			echo "$list" > "$cache_file" 2>/dev/null
+			changed=1
+			cache_misses=$((cache_misses + 1))
+			echo "$list" >"$cache_file" 2>/dev/null
 			debug "cache_write: ssid='$ssid' file=$(basename "$cache_file") size=${#list}"
 		else
-			cache_hits=$((cache_hits+1))
+			cache_hits=$((cache_hits + 1))
 			debug "cache_hit: ssid='$ssid'"
 		fi
 		# Ensure each SSID gets a baseline push exactly once after daemon start even if unchanged
 		case " $baseline_sent_hashes " in
-			*" $ssid_hash "*) baseline_done=1 ;;
-			*) baseline_done=0 ;;
+		*" $ssid_hash "*) baseline_done=1 ;;
+		*) baseline_done=0 ;;
 		esac
-		if [ "$baseline_done" -eq 0 ] && [ "$changed" -eq 0 ]; then changed=1; baseline_ssids=$((baseline_ssids+1)); fi
+		if [ "$baseline_done" -eq 0 ] && [ "$changed" -eq 0 ]; then
+			changed=1
+			baseline_ssids=$((baseline_ssids + 1))
+		fi
 		if [ "$changed" -eq 0 ]; then
 			# count suppressed sets for each iface in group (excluding skipped)
-			for gi in $group_ifcs; do case " $skip_ifaces " in *" $gi "*) continue ;; esac; nr_sets_suppressed=$((nr_sets_suppressed+1)); done
+			for gi in $group_ifcs; do
+				case " $skip_ifaces " in *" $gi "*) continue ;; esac
+				nr_sets_suppressed=$((nr_sets_suppressed + 1))
+			done
 			continue
 		fi
 		# Apply updated list to each interface in group except those skipped
@@ -400,7 +528,10 @@ EOF
 			final_list="$list"
 			if [ -n "$own_val" ]; then
 				filtered=$(printf '%s\n' "$canon" | grep -Fv -- "$own_val" | sed '/^$/d')
-				if [ -n "$filtered" ]; then joined=$(printf '%s\n' "$filtered" | awk 'NF{ if(n)printf(","); printf("%s",$0); n=1 }'); [ -n "$joined" ] && final_list="[$joined]" || final_list="[]"; else final_list="[]"; fi
+				if [ -n "$filtered" ]; then
+					joined=$(printf '%s\n' "$filtered" | awk 'NF{ if(n)printf(","); printf("%s",$0); n=1 }')
+					[ -n "$joined" ] && final_list="[$joined]" || final_list="[]"
+				else final_list="[]"; fi
 			fi
 			resp=$(ubus call hostapd."$gi" rrm_nr_set "{ \"list\": $final_list }" 2>/dev/null)
 			rc=$?
@@ -410,29 +541,82 @@ EOF
 				# Emit a second line post-reload to ensure timestamp ordering after SIGHUP
 				[ "$POST_RELOAD_FORCE" = 1 ] && debug "$gi: updated list=$final_list rc=0 (reload)"
 				last_update_time=$(date +%s 2>/dev/null)
-				nr_sets_sent=$((nr_sets_sent+1))
+				nr_sets_sent=$((nr_sets_sent + 1))
 				# neighbor count (post self-filter)
 				neighbor_count=$(printf '%s' "$final_list" | grep -o '\["' | wc -l 2>/dev/null)
 				# update neighbor_counts map (remove old entry for iface)
-				new_map=""; for nc in $neighbor_counts; do case "$nc" in ${gi}:*) continue ;; esac; new_map="$new_map $nc"; done; neighbor_counts="$new_map ${gi}:$neighbor_count"
+				new_map=""
+				for nc in $neighbor_counts; do
+					case "$nc" in ${gi}:*) continue ;; esac
+					new_map="$new_map $nc"
+				done
+				neighbor_counts="$new_map ${gi}:$neighbor_count"
 			else
-				nr_set_failures=$((nr_set_failures+1))
+				nr_set_failures=$((nr_set_failures + 1))
 				debug "$gi: rrm_nr_set failed rc=$rc list=$final_list resp=${resp:-<empty>}"
 			fi
 		done
 		# Mark baseline sent for this SSID (so we don't force again)
 		case " $baseline_sent_hashes " in *" $ssid_hash "*) ;; *) baseline_sent_hashes="$baseline_sent_hashes $ssid_hash" ;; esac
-	done
+	done <"$ssid_list_file"
 	rm -rf "$valdir" "$remote_tmp" 2>/dev/null || true
 }
 
-write_state; do_updates; CYCLE_COUNT=$((CYCLE_COUNT+1)); write_metrics
+# Compute overlay activity ordinals and write tokens atomically
+update_overlay_tokens() {
+	[ "$OVERLAY_ENABLE" = "1" ] || return 0
+	[ -n "$ORDINAL_MAP_PATH" ] && [ -f "$ORDINAL_MAP_PATH" ] || return 0
+	a_list=""
+	i_list=""
+	while IFS=' ' read -r ord ifc; do
+		[ -z "$ord" ] || [ -z "$ifc" ] && continue
+		cnt=""
+		if command -v jsonfilter >/dev/null 2>&1; then
+			cnt=$(ubus call "hostapd.$ifc" get_clients 2>/dev/null | jsonfilter -l1 -e 'keys(@) | length(@)' 2>/dev/null || echo 0)
+		else
+			cnt=$(ubus call "hostapd.$ifc" get_clients 2>/dev/null | grep -Eo '"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"' | wc -l 2>/dev/null)
+		fi
+		case "$cnt" in '' | *[!0-9]*) cnt=0 ;; esac
+		if [ "$cnt" -gt 0 ]; then a_list="$a_list,${ord}"; else i_list="$i_list,${ord}"; fi
+	done <"$ORDINAL_MAP_PATH"
+	a_list=${a_list#,}
+	i_list=${i_list#,}
+	overlay_active_ordinals="$a_list"
+	overlay_inactive_ordinals="$i_list"
+	if [ -z "$a_list" ] && [ -z "$i_list" ]; then
+		new_content="a=<none>\ni=<none>\n"
+	else
+		new_content="a=$a_list\ni=$i_list\n"
+	fi
+	cur=""
+	[ -f "$OVERLAY_TOKENS_PATH" ] && cur=$(cat "$OVERLAY_TOKENS_PATH" 2>/dev/null)
+	if [ "$cur" != "$new_content" ]; then
+		umask 077
+		printf '%s' "$new_content" >"${OVERLAY_TOKENS_PATH}.tmp" 2>/dev/null && mv "${OVERLAY_TOKENS_PATH}.tmp" "$OVERLAY_TOKENS_PATH" 2>/dev/null
+		debug "overlay_tokens: updated a='${a_list:-<none>}' i='${i_list:-<none>}'"
+	fi
+}
+
+write_state
+do_updates
+CYCLE_COUNT=$((CYCLE_COUNT + 1))
+update_overlay_tokens
+write_metrics
 [ "$MAX_CYCLES" -gt 0 ] && [ "$CYCLE_COUNT" -ge "$MAX_CYCLES" ] && exit 0
 while :; do
 	if [ "$MAX_CYCLES" -gt 0 ] && [ "$CYCLE_COUNT" -ge "$MAX_CYCLES" ]; then exit 0; fi
-	j=$(rand_jitter); sl=$((UPDATE_INTERVAL + j)); [ "$sl" -lt 1 ] && sl=1
-	sleep "$sl" & sleep_pid=$!; wait "$sleep_pid" 2>/dev/null; sleep_pid=""
-	do_updates; CYCLE_COUNT=$((CYCLE_COUNT+1)); write_state; write_metrics
+	j=$(rand_jitter)
+	sl=$((UPDATE_INTERVAL + j))
+	[ "$sl" -lt 1 ] && sl=1
+	sleep "$sl" &
+	sleep_pid=$!
+	wait "$sleep_pid" 2>/dev/null
+	sleep_pid=""
+	do_updates
+	CYCLE_COUNT=$((CYCLE_COUNT + 1))
+	update_overlay_tokens
+	write_state
+	write_metrics
 done
 
 exit 0
