@@ -3,13 +3,13 @@
 Purpose: Guide AI changes to the nrsyncd OpenWrt 802.11k Neighbor Report synchronization daemon.
 
 ## Components
-- `service/nrsyncd.init`: procd init; gathers per‑iface NR JSON, builds `SSIDn=` TXT args + metadata (`v=1 c=<count> h=<hash>`), exports env, registers mDNS service, admin subcommands.
-- `bin/nrsyncd`: Prebuilt daemon (opaque) consuming ordered `SSIDn=` args; periodic neighbor aggregation, mDNS refresh, metrics/state updates; signals HUP/USR1/USR2.
+- `service/nrsyncd.init`: procd init; gathers periface NR JSON, builds `SSIDn=` TXT args + metadata (`v=1 c=<count> h=<hash>`), exports env, registers mDNS service, admin subcommands.
+- `bin/nrsyncd`: Daemon script (POSIX shell) consuming ordered `SSIDn=` args; periodic neighbor aggregation, mDNS refresh, metrics/state updates; signals HUP/USR1/USR2.
 - `lib/nrsyncd_common.sh`: POSIX helpers (adaptive retry, iface mapping, ms sleep abstraction, readiness probes, normalization).
-- `scripts/install.sh`: Idempotent installer (deps, sysupgrade persistence, wireless validation / optional auto‑fix, prefix staging, opkg/apk detection, migration helpers).
+- `scripts/install.sh`: Idempotent installer (deps, sysupgrade persistence, wireless validation / optional autofix, prefix staging, opkg/apk detection, migration helpers).
 - `package/nrsyncd/`: OpenWrt package skeleton (Makefile + default `/etc/config/nrsyncd`).
 - `tests/` harness (mocks + scenarios: basic, skip, reload; installer test).
-- `examples/wireless.config`: Example dual‑band wireless config with required 802.11k / BSS transition options.
+- `examples/wireless.config`: Example dualband wireless config with required 802.11k / BSS transition options.
 
 ## Runtime Flow
 1. Count enabled `wifi-iface` stanzas.
@@ -19,6 +19,7 @@ Purpose: Guide AI changes to the nrsyncd OpenWrt 802.11k Neighbor Report synchro
 5. Launch daemon with args; export `NRSYNCD_*` env (legacy `RRM_NR_*` exported during deprecation window if still needed).
 6. Advertise `_nrsyncd_v1._udp` (browse may still observe `_rrm_nr._udp` for interoperability).
 7. Daemon cycles: compute neighbor reports, refresh mDNS (rate‑limited), update metrics/state; honor signals.
+8. Optional sidechannel: listener ingests tiny JSON frames; optional broadcast helper proactively sends minimal heartbeats to discovered peers.
 
 ## Conventions
 - Delimiter `+` reserved; never alter SSID content.
@@ -54,6 +55,7 @@ Purpose: Guide AI changes to the nrsyncd OpenWrt 802.11k Neighbor Report synchro
 - Subcommands: `mapping`, `mapping_json` (alias `mapping-json`), `neighbors`, `cache`, `refresh`, `diag`, `metrics`, `summary`, `timing_check|timing-check`, `status`, `skiplist`, `reset_metrics`, `version`, `metadata`.
 - Readiness probes: `diag` / `timing_check` use `rrm_nr_probe_iface` helper (name reflects upstream ubus method family).
 - Metadata inspection: `/etc/init.d/nrsyncd metadata` prints parsed live advertisement.
+- Sidechannel broadcast helper logs under `nrsyncd_sc_bcast` when enabled.
 
 ## Edge Cases / Pitfalls
 - Hostapd object mismatch: wait loop until count matches or timeout (exit with error).
@@ -74,6 +76,14 @@ Purpose: Guide AI changes to the nrsyncd OpenWrt 802.11k Neighbor Report synchro
 | skip_iface | Interfaces to exclude (repeatable) | Normalized; hostapd. prefix stripped |
 | quick_max_ms | Upper bound for quick readiness pass | Sanitized & capped |
 | second_pass_ms | Delay before second readiness pass | Sanitized & capped |
+| sidechannel_enable | Enable sidechannel listener | Requires extended=1 |
+| sidechannel_port | Sidechannel port | Default 32026 |
+| sidechannel_proto | Sidechannel protocol | udp or tcp |
+| sidechannel_psk | Optional PSK for frames | Not encryption |
+| sidechannel_bind | Optional bind address | Best effort |
+| sidechannel_broadcast_enable | Enable proactive broadcast helper | Requires extended=1 |
+| sidechannel_broadcast_interval | Seconds between broadcasts | Default 60 |
+| sidechannel_broadcast_jitter | Random 0..jitter seconds added | Default 10 |
 
 ## Installer Flags
 - `--add-sysupgrade` Persist binary/init/lib across sysupgrade.
