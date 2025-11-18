@@ -377,6 +377,9 @@ start_service() {
 		esac
 	done
 	# If overlay enabled originally we had i and a placeholders (or dynamic future values)
+	# Ensure state directory exists before pruning operations
+	mkdir -p /tmp/nrsyncd_state 2>/dev/null || true
+
 	if [ "$CFG_ACTIVITY_OVERLAY" = "1" ]; then
 		[ $_has_i -eq 0 ] && _pr_marker="${_pr_marker}${_pr_marker:+,}i"
 		[ $_has_a -eq 0 ] && _pr_marker="${_pr_marker}${_pr_marker:+,}a"
@@ -393,7 +396,6 @@ start_service() {
 	# ---------------------------------------------------------------------------
 
 	# Write deterministic ordinal map and placeholder overlay tokens (if overlay enabled)
-	mkdir -p /tmp/nrsyncd_state 2>/dev/null || true
 	ordinal_file="/tmp/nrsyncd_state/ordinal_map"
 	{
 		umask 077
