@@ -2,6 +2,15 @@
 
 All notable changes will be documented here. Dates use UTC.
 
+## [1.0.3] - 2025-11-18
+
+### Fixed
+
+- `rand_jitter()` portability: added fallback from `od` → `hexdump` → time-based seed for systems without GNU `od` support.
+- Init script: ensure `/tmp/nrsyncd_state` directory exists early before startup operations to prevent marker file write failures.
+
+---
+
 ## [1.0.2] - 2025-09-01
 
 ### Added
