@@ -84,6 +84,8 @@ start_service() {
 
 	# Initial startup log (version + config summary after load)
 	load_nrsyncd_config
+	# Ensure runtime state directory exists early for any marker file writes
+	mkdir -p /tmp/nrsyncd_state 2>/dev/null || true
 	logger -t "${NAME}" -p daemon.info "Starting (init ver=${NRSYNCD_INIT_VERSION})"
 
 	if [ "$CFG_ENABLED" = "0" ]; then
