@@ -13,3 +13,6 @@ local_refs/*
 
 # Ignore tests log files
 tests/**/*.log
+
+# Local scratch scripts (may include credentials/hostnames)
+temp_*.sh
