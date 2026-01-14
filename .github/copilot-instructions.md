@@ -53,6 +53,16 @@ Purpose: Guide AI changes to the nrsyncd OpenWrt 802.11k Neighbor Report synchro
 - Tests: `tests/run-tests.sh`; installer: `tests/scripts/test_install.sh`.
 - Shell lint: `scripts/shellcheck.sh`.
 
+## Chat Outputs
+
+The chat renderer “helpfully” auto-links parts of commands, and it can mangle things that look like Markdown (especially [...]() patterns) when formatting messages.
+
+How to avoid it going forward:
+
+- Put commands on their own line, in a plain code block, with no surrounding punctuation.
+- Avoid any [...]() text right next to commands (and avoid smart quoting).
+- Keep the command block only the command(s), nothing else.
+
 ## Observability & Admin Subcommands
 
 - Logging tag: `nrsyncd` (info/error, debug when enabled).
