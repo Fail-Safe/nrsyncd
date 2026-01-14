@@ -2,6 +2,20 @@
 
 All notable changes will be documented here. Dates use UTC.
 
+## [1.0.4] - 2026-01-13
+
+### Fixed
+
+- Daemon: always finalize runtime state file (`/tmp/nrsyncd_runtime`) even when no `SSIDn=` positional args are present (prevents missing runtime state in test harness / edge cases).
+- Daemon: suppress noisy stderr from optional `ubus call hostapd.<iface> bss` fallback when the method is unavailable.
+
+### Changed
+
+- Init script: clarify AP/hostapd-only behavior and log how many `wifi-iface` stanzas are ignored (non-`ap` or disabled).
+- Admin UX: `status` notes when metrics may be stale immediately after a restart.
+- Docs: prefer `ubus call umdns announcements` (`_nrsyncd_v1._udp.local`) for validating local TXT advertisement; keep `umdns browse` for network discovery.
+- Repo hygiene: ignore local scratch scripts (`temp_*.sh`).
+
 ## [1.0.3] - 2025-11-18
 
 ### Fixed
@@ -73,4 +87,3 @@ Initial public release (versioned service adoption from day one).
 ### Migration Note
 
 Renamed from legacy project `rrm_nr`; legacy environment variables (`RRM_NR_*`) retained for compatibility. Environment prefix and legacy mDNS service fallback are deprecated 2025-10-01. See README Migration section for precedence rules and timeline.
-
