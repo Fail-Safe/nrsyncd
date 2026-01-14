@@ -1,5 +1,4 @@
-nrsyncd – 802.11k Neighbor Report Sync Daemon 🛜
-======================================================
+# nrsyncd – 802.11k Neighbor Report Sync Daemon 🛜
 
 Distributes per‑BSS 802.11k Neighbor Report data across a set of OpenWrt APs using mDNS so clients (and higher‑level steering logic) can discover other BSSes of the same ESS quickly. Client support of 802.11k is required for full functionality and support varies by client device manufacturer and operating system.
 
@@ -13,7 +12,7 @@ Inspiration for this `nrsyncd` project comes from pioneering efforts by [Kiss Á
 
 #### Provenance
 
-*nrsyncd* is an extracted and renamed continuation of the refactored [“Neighbor Report Distributor” (rrm_nr) project](https://github.com/simonyiszk/openwrt-rrm-nr-distributor). It was released as *nrsyncd v1.0.0* under GPLv2 with permission. Legacy names are intentionally not retained.
+_nrsyncd_ is an extracted and renamed continuation of the refactored [“Neighbor Report Distributor” (rrm_nr) project](https://github.com/simonyiszk/openwrt-rrm-nr-distributor). It was released as _nrsyncd v1.0.0_ under GPLv2 with permission. Legacy names are intentionally not retained.
 
 ## Features ✨
 
@@ -28,16 +27,16 @@ Inspiration for this `nrsyncd` project comes from pioneering efforts by [Kiss Á
 - Metrics reset (`reset_metrics`) & on‑demand refresh (`refresh`)
 - Baseline per‑SSID push guarantees initial hostapd population even with no diff
 - Remote uniqueness tracking (cycle + cumulative) for observability of discovery breadth
- - Remote installer mode (stage & execute over SSH with a single command)
+- Remote installer mode (stage & execute over SSH with a single command)
 
-## Architecture 🏗	️
+## Architecture 🏗 ️
 
-Component | Purpose
-----------|--------
-`service/nrsyncd.init` | procd init script: gathers NR data via `ubus`, formats TXT args, registers mDNS service
-`bin/nrsyncd` | Opaque daemon consuming positional `SSIDn=<value>` args (prebuilt; no source here)
-`lib/nrsyncd_common.sh` | Shared POSIX helpers (adaptive retry, iface mapping, millisecond sleep abstraction, probes)
-`examples/wireless.config` | Example `/etc/config/wireless` enabling 802.11k (`ieee80211k '1'`, `bss_transition '1'`)
+| Component                  | Purpose                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| `service/nrsyncd.init`     | procd init script: gathers NR data via `ubus`, formats TXT args, registers mDNS service     |
+| `bin/nrsyncd`              | Opaque daemon consuming positional `SSIDn=<value>` args (prebuilt; no source here)          |
+| `lib/nrsyncd_common.sh`    | Shared POSIX helpers (adaptive retry, iface mapping, millisecond sleep abstraction, probes) |
+| `examples/wireless.config` | Example `/etc/config/wireless` enabling 802.11k (`ieee80211k '1'`, `bss_transition '1'`)    |
 
 ### Data Flow Summary 🔀
 
@@ -77,6 +76,7 @@ sequenceDiagram
 A helper script `scripts/migrate_from_rrm_nr.sh` exists for older deployments but is not required for fresh installs.
 
 Installer behavior with legacy rrm_nr:
+
 - On a live system (no `--prefix`) if legacy `rrm_nr` config/service is detected and `/etc/config/nrsyncd` is not present, `scripts/install.sh` aborts to avoid a mixed state.
 - To proceed, either run `sh scripts/migrate_from_rrm_nr.sh` first, or re-run the installer with `--auto-migrate-legacy` to migrate automatically.
 
@@ -99,8 +99,9 @@ sh scripts/install.sh
 # 3) Validate runtime and mDNS
 logread | grep nrsyncd
 /etc/init.d/nrsyncd status
-ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'
+ubus call umdns announcements | jsonfilter -e '@["_nrsyncd_v1._udp.local"][*].txt[*]'
 	# Tip: arrays in jsonfilter need [*]; omitting it often yields an empty []
+	# Note: `umdns browse` may not show the local host's own announcement; use `announcements` on the advertising AP.
 
 # 4) (Recommended) Remove legacy artifacts after validation
 sh scripts/migrate_from_rrm_nr.sh --remove-old --force
@@ -115,6 +116,7 @@ sh scripts/install.sh --add-sysupgrade --no-start
 ```
 
 Notes:
+
 - Remote installs also support migration via `--auto-migrate-legacy` (forward this flag with your remote run).
 - The migration helper won’t modify your wireless config; ensure 802.11k/BSS transition are enabled per the example.
 
@@ -133,20 +135,22 @@ sh scripts/install.sh
 ```
 
 Options:
+
 - `--no-start` only stage files (don’t enable/start service)
 - `--force-config` overwrite existing `/etc/config/nrsyncd`
 - `--add-sysupgrade` append required paths to `/etc/sysupgrade.conf` for persistence
 - `--prefix /overlay` stage into another root (image build workflows)
- - `--deps-auto-yes` / `--deps-auto-no` non‑interactive dependency handling
- - `--install-optional` install high‑resolution sleep helper (coreutils-sleep or coreutils)
- - `--fix-wireless` auto-enable missing 802.11k / BSS transition options
- - `--auto-migrate-legacy` if legacy `rrm_nr` is detected on a live system, migrate it automatically instead of aborting
- - `--cleanup-legacy` after install, remove legacy `rrm_nr` init/bin/lib from the live system
- - `--cleanup-legacy-force` also remove legacy `/etc/config/rrm_nr` (implies `--cleanup-legacy`)
+- `--deps-auto-yes` / `--deps-auto-no` non‑interactive dependency handling
+- `--install-optional` install high‑resolution sleep helper (coreutils-sleep or coreutils)
+- `--fix-wireless` auto-enable missing 802.11k / BSS transition options
+- `--auto-migrate-legacy` if legacy `rrm_nr` is detected on a live system, migrate it automatically instead of aborting
+- `--cleanup-legacy` after install, remove legacy `rrm_nr` init/bin/lib from the live system
+- `--cleanup-legacy-force` also remove legacy `/etc/config/rrm_nr` (implies `--cleanup-legacy`)
 
 ### Remote Install From Your Workstation 📡
 
 Run the installer locally and have it stage + execute itself on one or more remote OpenWrt hosts over SSH (no manual scp required). The script:
+
 1. Builds a minimal file set + a `sha256` manifest.
 2. Streams a tar archive over SSH to each host (parallel sequentially, one after another).
 3. Verifies integrity via `sha256sum -c` on the target (warns & skips verification if `sha256sum` absent).
@@ -181,56 +185,60 @@ sh scripts/install.sh --remote ap1 --remote-prefix /tmp/nrsyncd_stage_alt
 
 Remote control flags (not forwarded to the target invocation):
 
-Flag | Purpose | Default
------|---------|--------
-`--remote <host[,host2]>` | Enable remote mode for one or many hosts (comma or repeat) | (off)
-`--remote-prefix <dir>` | Staging directory on target | `/tmp/nrsyncd_remote`
-`--remote-keep` | Retain staging directory after success | (removed)
-`--ssh-opts "..."` | Extra SSH options (port, identity, etc.) | (none)
-`--remote-dry-run` | Show plan + hashes, exit without changes | (off)
-`--remote-retries <n>` | Retry count per host (exponential backoff) | 1
-`--remote-backoff <s>` | Base seconds for backoff (2,4,8...) | 2
+| Flag                      | Purpose                                                    | Default               |
+| ------------------------- | ---------------------------------------------------------- | --------------------- |
+| `--remote <host[,host2]>` | Enable remote mode for one or many hosts (comma or repeat) | (off)                 |
+| `--remote-prefix <dir>`   | Staging directory on target                                | `/tmp/nrsyncd_remote` |
+| `--remote-keep`           | Retain staging directory after success                     | (removed)             |
+| `--ssh-opts "..."`        | Extra SSH options (port, identity, etc.)                   | (none)                |
+| `--remote-dry-run`        | Show plan + hashes, exit without changes                   | (off)                 |
+| `--remote-retries <n>`    | Retry count per host (exponential backoff)                 | 1                     |
+| `--remote-backoff <s>`    | Base seconds for backoff (2,4,8...)                        | 2                     |
 
 All other standard flags (`--force-config`, `--no-start`, `--deps-auto-yes`, etc.) are preserved and applied on the remote side.
 
 Notes:
+
 - Requires `ssh` & `tar` locally and `tar` on the target (present on typical OpenWrt images).
 - Integrity: Uses `sha256sum -c` on the target. If absent remotely, a warning is emitted and install proceeds (consider `opkg install coreutils-sha256sum`).
 - Multi-host executes sequentially; failures on one host do not halt others (overall exit code reflects any failure).
 - Retry logic: Each host retried up to `--remote-retries` times; delay sequence = base, base*2, base*4, ... using `--remote-backoff` as the starting seconds.
 - Dry-run still generates a manifest locally then removes it (no remote connections made).
 - Missing optional files are noted but not fatal.
- - Failures leave the staging directory intact for that host (unless missing connectivity precluded creation).
- - Legacy note: remote installs will also abort on legacy `rrm_nr` unless `--auto-migrate-legacy` is included; you can also add `--cleanup-legacy` or `--cleanup-legacy-force` to remove legacy files/config after install.
- - Duplicate hosts listed in `--remote` are de‑duplicated automatically (order preserved).
+- Failures leave the staging directory intact for that host (unless missing connectivity precluded creation).
+- Legacy note: remote installs will also abort on legacy `rrm_nr` unless `--auto-migrate-legacy` is included; you can also add `--cleanup-legacy` or `--cleanup-legacy-force` to remove legacy files/config after install.
+- Duplicate hosts listed in `--remote` are de‑duplicated automatically (order preserved).
 
 ### 2. Manual Copy (Minimalistic) 📠
 
 1. Ensure radios share a common ESSID where you want neighbor data propagated.
 2. Enable 802.11k + BSS transition in each interface:
-	- `option ieee80211k '1'`
-	- `option bss_transition '1'`
+    - `option ieee80211k '1'`
+    - `option bss_transition '1'`
 3. Ensure `umdns` is installed & running (`opkg install umdns`).
 4. Copy files:
-	```sh
-	cp service/nrsyncd.init /etc/init.d/nrsyncd
-	cp bin/nrsyncd /usr/bin/nrsyncd
-	cp lib/nrsyncd_common.sh /lib/nrsyncd_common.sh 2>/dev/null || true
-	chmod +x /etc/init.d/nrsyncd /usr/bin/nrsyncd
-	/etc/init.d/nrsyncd enable
-	/etc/init.d/nrsyncd start
-	```
+    ```sh
+    cp service/nrsyncd.init /etc/init.d/nrsyncd
+    cp bin/nrsyncd /usr/bin/nrsyncd
+    cp lib/nrsyncd_common.sh /lib/nrsyncd_common.sh 2>/dev/null || true
+    chmod +x /etc/init.d/nrsyncd /usr/bin/nrsyncd
+    /etc/init.d/nrsyncd enable
+    /etc/init.d/nrsyncd start
+    ```
 5. Verify basic operation:
-	```sh
-	logread | grep nrsyncd
-	ubus call umdns browse | grep SSID1=
-	/etc/init.d/nrsyncd status
-	```
+    ```sh
+    logread | grep nrsyncd
+    ubus call umdns browse | grep SSID1=
+    /etc/init.d/nrsyncd status
+    ```
 
 ### Post-Install Checklist ✅
 
 - `logread | grep nrsyncd` shows a line "All wireless interfaces are initialized." followed by periodic update lines (if debug enabled).
 - `ubus call umdns browse` contains TXT records `SSID1=...` etc.
+
+- Validate local advertisement via: `ubus call umdns announcements | jsonfilter -e '@["_nrsyncd_v1._udp.local"][*].txt[*]'`.
+- Validate network discovery via: `ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'`.
 - `/etc/init.d/nrsyncd status` shows current effective runtime values.
 - `/etc/init.d/nrsyncd summary` prints concise counters & ratios.
 - `/etc/init.d/nrsyncd reset_metrics` clears metrics & remote uniqueness (SIGUSR2).
@@ -239,18 +247,23 @@ Notes:
 ### Quick Debug / Tuning Snippets ⚙️
 
 Enable debug logging at runtime (no restart):
+
 ```sh
 uci set nrsyncd.global.debug=1
 uci commit nrsyncd
 /etc/init.d/nrsyncd reload
 ```
+
 Temporarily shorten update + jitter for lab testing (DON'T use in production extremely low values):
+
 ```sh
 uci set nrsyncd.global.update_interval=15
 uci set nrsyncd.global.jitter_max=3
 uci commit nrsyncd; /etc/init.d/nrsyncd reload
 ```
+
 Restore defaults:
+
 ```sh
 uci delete nrsyncd.global.update_interval
 uci delete nrsyncd.global.jitter_max
@@ -272,14 +285,16 @@ rm -f /etc/config/nrsyncd /tmp/nrsyncd_runtime /tmp/nrsyncd_metrics
 
 The init script performs a short adaptive retry loop (200ms cadence, ≤1s total) when gathering initial `rrm_nr_get_own` values. On typical vanilla OpenWrt images `usleep` is NOT present (BusyBox `sleep` has 1s resolution). The script automatically detects this:
 
-* If `usleep` exists (e.g. via `busybox-extras` or `coreutils-sleep`), it sleeps for true 200ms steps.
-* If absent, it degrades to a single 1s sleep (effectively a one-shot retry). Elapsed accounting ensures we still bound total wait time.
+- If `usleep` exists (e.g. via `busybox-extras` or `coreutils-sleep`), it sleeps for true 200ms steps.
+- If absent, it degrades to a single 1s sleep (effectively a one-shot retry). Elapsed accounting ensures we still bound total wait time.
 
 Installing a micro-sleep implementation (optional):
+
 ```
 opkg update
 opkg install coreutils-sleep   # or a busybox providing usleep
 ```
+
 This is purely an optimization; functionality still works without it, but initial readiness detection may be up to ~1s slower on hardware where readiness is actually ~0.2s.
 
 ## Configuration (UCI) 🔧
@@ -321,6 +336,7 @@ uci commit nrsyncd
 Full restart still required only if you change structural aspects before daemon start (e.g. enabling/disabling service) or to clear internal state forcibly.
 
 Environment mapping (init script → daemon) – new primary names with legacy (`RRM_NR_*`) still exported for backward compatibility in 1.0.x (deprecated 2025-10-01):
+
 - `NRSYNCD_UPDATE_INTERVAL` → `UPDATE_INTERVAL`
 - `NRSYNCD_JITTER_MAX` → `JITTER_MAX`
 - `NRSYNCD_DEBUG` → enables debug log path
@@ -331,21 +347,22 @@ Environment mapping (init script → daemon) – new primary names with legacy (
 All options are optional; defaults are compiled into the script.
 
 Numeric validation & bounds:
+
 - update_interval: minimum 5 enforced (values <5 auto-raised to 5)
 - jitter_max: capped to half of effective update_interval
 - umdns_refresh_interval: minimum 5 enforced
 - umdns_settle_delay: forced >=0 (negative coerced to 0)
-Out-of-range values are sanitized silently; check `/etc/init.d/nrsyncd status` after reload for effective applied values.
+  Out-of-range values are sanitized silently; check `/etc/init.d/nrsyncd status` after reload for effective applied values.
 
 ### Deprecation Timeline ⏳
 
 Legacy artifacts retained for a single transition window:
 
-Item | Status in 1.0.0 | Deprecation Date | Action After Date
------|-----------------|------------------|------------------
-`RRM_NR_*` environment variables | Supported (alias to NRSYNCD_*) | 2025-10-01 | Will be removed in a minor release; update scripts to `NRSYNCD_*`.
-`_rrm_nr._udp` mDNS browse fallback | Supported (fallback only) | 2025-10-01 | Removal planned; discovery must use `_nrsyncd_v1._udp`.
-Unversioned `_nrsyncd._udp` | Never deployed | N/A | Do not rely on this name.
+| Item                                | Status in 1.0.0                  | Deprecation Date | Action After Date                                                  |
+| ----------------------------------- | -------------------------------- | ---------------- | ------------------------------------------------------------------ |
+| `RRM_NR_*` environment variables    | Supported (alias to NRSYNCD\_\*) | 2025-10-01       | Will be removed in a minor release; update scripts to `NRSYNCD_*`. |
+| `_rrm_nr._udp` mDNS browse fallback | Supported (fallback only)        | 2025-10-01       | Removal planned; discovery must use `_nrsyncd_v1._udp`.            |
+| Unversioned `_nrsyncd._udp`         | Never deployed                   | N/A              | Do not rely on this name.                                          |
 
 `rrm_nr_*` ubus method names remain indefinitely (tied to hostapd expectations) until upstream hostapd gains a native rename.
 
@@ -362,6 +379,7 @@ config nrsyncd 'global'
 You may (optionally) include a `hostapd.` prefix; it will be stripped automatically (e.g. `hostapd.wlan0`).
 
 Notes / behavior:
+
 - Order and duplicates are normalized; the effective set is visible via `/etc/init.d/nrsyncd skiplist`.
 - A blank `list skip_iface` without a value is ignored (no error); remove such lines to keep the config tidy.
 - Changes take effect on `/etc/init.d/nrsyncd reload` (SIGHUP) without a full restart.
@@ -378,21 +396,21 @@ Note: The runtime status file still reports the environment variable as `skip_if
 
 ### Service Commands 🛠️
 
-Command | Purpose | Notes
---------|---------|------
-`status` | Show runtime state + embedded metrics | Reads `/tmp/nrsyncd_runtime` & metrics snapshot
-`summary` | One‑line health overview (push/suppress/cache/remote/neighbor stats) | Fast parse for scripts
-`metrics` | Raw metrics file contents | For detailed monitoring ingestion
-`mapping` | Live iface → BSSID / channel / width / center1 / SSID table | Uses iwinfo + ubus
-`mapping_json` | JSON array variant of mapping | Alias: `mapping-json`
-`neighbors` | Dump current per‑iface neighbor lists (JSON) | After self‑filter
-`cache` | Show per‑SSID cached list files | Includes mtime + sample head
-`refresh` | Force immediate update cycle (SIGUSR1) | No timing wait
-`reset_metrics` | Reset counters & remote uniqueness (SIGUSR2) | Keeps cache/data intact
-`diag` / `timing_check` | Readiness probe timings for each iface | Alias: `timing-check`
-`skiplist` | Effective configured skip_iface entries | Normalized view
-`version` | Init script version (and git hash if available) | Sync with release tag
-`metadata` | Show parsed live mDNS TXT advertisement (SSIDn tokens + metadata v/c/h) | Useful to verify ordering and hash
+| Command                 | Purpose                                                                 | Notes                                           |
+| ----------------------- | ----------------------------------------------------------------------- | ----------------------------------------------- |
+| `status`                | Show runtime state + embedded metrics                                   | Reads `/tmp/nrsyncd_runtime` & metrics snapshot |
+| `summary`               | One‑line health overview (push/suppress/cache/remote/neighbor stats)    | Fast parse for scripts                          |
+| `metrics`               | Raw metrics file contents                                               | For detailed monitoring ingestion               |
+| `mapping`               | Live iface → BSSID / channel / width / center1 / SSID table             | Uses iwinfo + ubus                              |
+| `mapping_json`          | JSON array variant of mapping                                           | Alias: `mapping-json`                           |
+| `neighbors`             | Dump current per‑iface neighbor lists (JSON)                            | After self‑filter                               |
+| `cache`                 | Show per‑SSID cached list files                                         | Includes mtime + sample head                    |
+| `refresh`               | Force immediate update cycle (SIGUSR1)                                  | No timing wait                                  |
+| `reset_metrics`         | Reset counters & remote uniqueness (SIGUSR2)                            | Keeps cache/data intact                         |
+| `diag` / `timing_check` | Readiness probe timings for each iface                                  | Alias: `timing-check`                           |
+| `skiplist`              | Effective configured skip_iface entries                                 | Normalized view                                 |
+| `version`               | Init script version (and git hash if available)                         | Sync with release tag                           |
+| `metadata`              | Show parsed live mDNS TXT advertisement (SSIDn tokens + metadata v/c/h) | Useful to verify ordering and hash              |
 
 ### Reloading Configuration ↻
 
@@ -404,9 +422,11 @@ Command | Purpose | Notes
 4. Logs a concise before→after summary (`Reload (SIGHUP): U=60 J=10 ... -> U=45 J=5 ...`). If any timing shrinks, the current sleep is interrupted for an immediate cycle.
 
 Status:
+
 ```
 /etc/init.d/nrsyncd status
 ```
+
 Shows current effective runtime values (from `/tmp/nrsyncd_runtime`).
 
 Next cycle uses the new timing immediately; current sleep is unaffected until next iteration (keeps logic simple and race‑free).
@@ -414,6 +434,7 @@ Next cycle uses the new timing immediately; current sleep is unaffected until ne
 ## Example Wireless Config Snippet 👨🏻‍🏫
 
 See `examples/wireless.config` for a dual‑band setup. Key lines:
+
 ```
 option ieee80211k '1'
 option bss_transition '1'
@@ -422,46 +443,49 @@ option time_advertisement '2'
 
 ## Troubleshooting 🧑‍🔧
 
-Symptom | Check
---------|------
-Service never starts | `logread` for errors about missing `/etc/config/wireless` or zero interfaces.
-Hangs at "Waiting for all wireless interfaces" | `ubus list hostapd.*` count vs enabled `wifi-iface` stanzas; ensure no disabled ones assumed active.
-Missing TXT records | Confirm `umdns` running and firewall allows mDNS; inspect assembly by temporarily adding a `logger -t nrsyncd "$rrm_own"` before `procd_open_instance`.
-Immediate restart with wpad restart | Likely ubus exit code 4 from `rrm_nr_get_own`; watch for upstream OpenWrt bug reference (see init script comment).
+| Symptom                                        | Check                                                                                                                                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Service never starts                           | `logread` for errors about missing `/etc/config/wireless` or zero interfaces.                                                                           |
+| Hangs at "Waiting for all wireless interfaces" | `ubus list hostapd.*` count vs enabled `wifi-iface` stanzas; ensure no disabled ones assumed active.                                                    |
+| Missing TXT records                            | Confirm `umdns` running and firewall allows mDNS; inspect assembly by temporarily adding a `logger -t nrsyncd "$rrm_own"` before `procd_open_instance`. |
+| Immediate restart with wpad restart            | Likely ubus exit code 4 from `rrm_nr_get_own`; watch for upstream OpenWrt bug reference (see init script comment).                                      |
 
 ## Runtime Metrics 📊
 
 Metrics are written to `/tmp/nrsyncd_metrics` each cycle (atomic rename). Fields:
 
-Field | Meaning | Notes
-------|---------|------
-`cycle` | Number of update cycles completed | Increments once per full loop
-`cache_hits` | Times a per-SSID group list matched existing cache | Diff done on whitespace-stripped JSON
-`cache_misses` | Times a per-SSID list changed (or forced) and was rewritten | Includes forced writes from empty -> populated
-`nr_sets_sent` | Per-interface neighbor lists actually pushed to hostapd | Baseline + subsequent changes
-`nr_sets_suppressed` | Candidate per-interface updates skipped because list unchanged | Grows with stable environment
-`remote_entries_merged` | Cumulative count of remote TXT lines ingested | Adds each cycle; not unique count
-`remote_unique_cycle` | Distinct remote TXT entries observed in the most recent cycle | After per-cycle `sort -u`
-`remote_unique_total` | Cumulative distinct remote TXT entries since daemon start | Backed by on-disk seen set
-`last_update_time` | Epoch of most recent successful hostapd rrm_nr_set call | 0 until first push
-`baseline_ssids` | Count of distinct SSIDs that received a baseline push this process | Ensures each SSID delivered once even if no diff
-`suppression_ratio_pct` | Integer percent = suppressed / (sent+suppressed) * 100 | 0 when no updates yet
-`nr_set_failures` | Count of failed `rrm_nr_set` ubus calls | Inspect logs if non‑zero; indicates hostapd rejection or transient ubus issues
-`neighbor_count_<iface>` | Post self‑filter neighbor list size for interface `<iface>` | One dynamic key per active, non‑skipped interface
+| Field                    | Meaning                                                            | Notes                                                                          |
+| ------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `cycle`                  | Number of update cycles completed                                  | Increments once per full loop                                                  |
+| `cache_hits`             | Times a per-SSID group list matched existing cache                 | Diff done on whitespace-stripped JSON                                          |
+| `cache_misses`           | Times a per-SSID list changed (or forced) and was rewritten        | Includes forced writes from empty -> populated                                 |
+| `nr_sets_sent`           | Per-interface neighbor lists actually pushed to hostapd            | Baseline + subsequent changes                                                  |
+| `nr_sets_suppressed`     | Candidate per-interface updates skipped because list unchanged     | Grows with stable environment                                                  |
+| `remote_entries_merged`  | Cumulative count of remote TXT lines ingested                      | Adds each cycle; not unique count                                              |
+| `remote_unique_cycle`    | Distinct remote TXT entries observed in the most recent cycle      | After per-cycle `sort -u`                                                      |
+| `remote_unique_total`    | Cumulative distinct remote TXT entries since daemon start          | Backed by on-disk seen set                                                     |
+| `last_update_time`       | Epoch of most recent successful hostapd rrm_nr_set call            | 0 until first push                                                             |
+| `baseline_ssids`         | Count of distinct SSIDs that received a baseline push this process | Ensures each SSID delivered once even if no diff                               |
+| `suppression_ratio_pct`  | Integer percent = suppressed / (sent+suppressed) \* 100            | 0 when no updates yet                                                          |
+| `nr_set_failures`        | Count of failed `rrm_nr_set` ubus calls                            | Inspect logs if non‑zero; indicates hostapd rejection or transient ubus issues |
+| `neighbor_count_<iface>` | Post self‑filter neighbor list size for interface `<iface>`        | One dynamic key per active, non‑skipped interface                              |
 
 Interpretation tips:
+
 - A high `suppression_ratio_pct` (e.g. >95%) indicates a stable environment (expected after convergence).
 - `baseline_ssids` should equal the number of distinct SSIDs served locally (after a fresh start). If smaller, check logs for missing SSID mapping lines.
-- `remote_entries_merged` will typically be (#remote TXT lines) * cycles; large growth alone is not an issue.
+- `remote_entries_merged` will typically be (#remote TXT lines) \* cycles; large growth alone is not an issue.
 - If `nr_sets_sent` stalls at 0 while `cache_misses` increments, hostapd `rrm_nr_set` may be failing (enable debug and inspect logs).
 - Non‑zero `nr_set_failures` warrants checking `logread -e nrsyncd` for rejection causes.
 - `neighbor_count_<iface>` lets you quickly spot asymmetric visibility (e.g. one radio consistently sees fewer peers).
 
 Ordering & Dedupe:
+
 - Neighbor lists are now deterministically ordered by (SSID, BSSID) and duplicate SSID+BSSID pairs arriving from multiple remote sources are suppressed to a single entry.
 - Per‑interface lists exclude that interface’s own BSSID triplet; counts reflect only true neighbors.
 
 Example excerpt (with newer fields):
+
 ```
 cycle=37
 cache_hits=96
@@ -491,6 +515,7 @@ summary: cycles=37 pushes=3 suppressed=102 suppression=97% cache(hit/miss)=96/2 
 ```
 
 Field groups:
+
 - `cycles` / `pushes` / `suppressed` / `suppression`: High suppression with low failures indicates convergence.
 - `cache(hit/miss)`: Misses correspond to per‑SSID list mutations (or baseline). Persistent misses imply churn.
 - `baseline_ssids`: Distinct SSIDs baseline‑delivered this process (should match local distinct SSIDs after first cycle).
@@ -530,14 +555,17 @@ High‑level ideas (details and additional guidance in `docs/DEVELOPER.md`):
 ### Persistence Across Upgrades (sysupgrade) 🆕
 
 To keep files across firmware flashes, add these lines to `/etc/sysupgrade.conf` (or use `sh scripts/install.sh --add-sysupgrade`):
+
 ```
 /etc/init.d/nrsyncd
 /usr/bin/nrsyncd
 /lib/nrsyncd_common.sh
 ```
+
 Note: UCI configs in `/etc/config/*` (including `/etc/config/nrsyncd`) are already preserved by sysupgrade; no need to list them.
 
 Manual addition:
+
 ```sh
 for f in /etc/init.d/nrsyncd /usr/bin/nrsyncd /lib/nrsyncd_common.sh; do
 	grep -qx "$f" /etc/sysupgrade.conf || echo "$f" >> /etc/sysupgrade.conf
@@ -545,6 +573,7 @@ done
 ```
 
 Verify later:
+
 ```sh
 grep nrsyncd /etc/sysupgrade.conf
 ```
@@ -554,18 +583,21 @@ grep nrsyncd /etc/sysupgrade.conf
 Runtime tools normally present: `ubus`, `jsonfilter`, `iwinfo`, `umdns`. If missing:
 
 Using opkg (traditional):
+
 ```sh
 opkg update
 opkg install umdns jsonfilter iwinfo
 ```
 
 Using apk (emerging images):
+
 ```sh
 apk update
 apk add umdns jsonfilter iwinfo
 ```
 
 Optional high-resolution sleep:
+
 ```sh
 opkg install coreutils-sleep   # or
 apk add coreutils
@@ -574,6 +606,7 @@ apk add coreutils
 ## Limitations ⏸️
 
 Summary (full discussion and future roadmap ideas in `docs/DEVELOPER.md`):
+
 - Large deployments (>20 AP) may see slower convergence.
 - Binary daemon is prebuilt (no current source in repo).
 - Remote ingestion relies on mDNS reachability; packet loss can delay uniqueness visibility.
@@ -586,4 +619,3 @@ GPLv2 – see `LICENSE`.
 ## Quick One‑Liner (Elevator Pitch) 👨🏽‍💼
 
 Collect each hostapd's 802.11k neighbor report and advertise them via mDNS TXT records so peer APs (same ESS) can rapidly share steering hints.
-

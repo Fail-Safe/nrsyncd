@@ -408,10 +408,17 @@ status_service() {
 		# Include currently configured skip list from UCI for clarity
 		load_nrsyncd_config
 		[ -n "$CFG_SKIP_IFACES" ] && printf '  configured_skip: %s\n' "$CFG_SKIP_IFACES"
-		[ -f "$metrics_file" ] && {
+		if [ -f "$metrics_file" ]; then
+			# Metrics are written after update cycles; right after a restart they may still
+			# reflect the previous daemon instance.
+			state_mtime=$(date -r "$state_file" +%s 2>/dev/null || stat -c %Y "$state_file" 2>/dev/null || echo 0)
+			metrics_mtime=$(date -r "$metrics_file" +%s 2>/dev/null || stat -c %Y "$metrics_file" 2>/dev/null || echo 0)
+			if [ "${metrics_mtime:-0}" -lt "${state_mtime:-0}" ]; then
+				printf '  metrics_note: stale (metrics older than runtime state; daemon may still be starting)\n'
+			fi
 			printf '  metrics:\n'
 			sed 's/^/    /' "$metrics_file"
-		}
+		fi
 	else
 		echo "nrsyncd status: runtime state not yet written (daemon starting?)"
 	fi

@@ -8,6 +8,15 @@ JITTER_MAX=10
 UMDNS_REFRESH_INTERVAL=30
 UMDNS_SETTLE_DELAY=0
 
+# This script is the daemon. Admin subcommands live in the init script.
+# If invoked like a CLI (e.g. `nrsyncd metadata`), provide a helpful hint.
+case "${1:-}" in
+metadata | status | mapping | mapping_json | mapping-json | neighbors | cache | refresh | diag | metrics | timing_check | timing-check | skiplist | summary | reset_metrics | version)
+	echo "nrsyncd: '$1' is an init-script command; use: /etc/init.d/nrsyncd $1" >&2
+	exit 2
+	;;
+esac
+
 num_re='^[0-9][0-9]*$'
 _ival=${NRSYNCD_UPDATE_INTERVAL:-$RRM_NR_UPDATE_INTERVAL}
 [ -n "$_ival" ] && echo "$_ival" | grep -qE "$num_re" && UPDATE_INTERVAL=$_ival
@@ -292,7 +301,7 @@ build_mapping() {
 	[ -z "$hostapd_members" ] && return
 	for i in $hostapd_members; do
 		ssid=$(iwinfo "$i" info 2>/dev/null | sed -n 's/^ESSID: "\(.*\)"$/\1/p')
-		[ -z "$ssid" ] && ssid=$(ubus call hostapd."$i" bss | jsonfilter -e '@.ssid' 2>/dev/null)
+		[ -z "$ssid" ] && ssid=$(ubus call hostapd."$i" bss 2>/dev/null | jsonfilter -e '@.ssid' 2>/dev/null)
 		if [ -z "$ssid" ]; then
 			own_json=$(rrm_get_own_quick "$i" 2>/dev/null)
 			[ -n "$own_json" ] && ssid=$(echo "$own_json" | jsonfilter -e '$.value[1]' 2>/dev/null)

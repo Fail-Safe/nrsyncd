@@ -4,15 +4,15 @@ This document captures developer-focused details removed from the README for end
 
 ## Repository Layout
 
-Path | Purpose
------|--------
-`service/nrsyncd.init` | Init script (procd) orchestrating readiness, argument assembly, admin commands.
-`bin/nrsyncd` | Prebuilt daemon (opaque); consumes `SSIDn=` args and performs periodic updates.
-`lib/nrsyncd_common.sh` | Shared helpers (normalization, retries, probes). Optional but preferred.
-`config/nrsyncd.config` | Example UCI configuration template (formerly `rrm_nr.config`).
-`examples/` | Example wireless config enabling required 802.11k features.
-`tests/` | (If present) harness for basic functional validation.
-`docs/` | Documentation (CHANGELOG, developer notes).
+| Path                    | Purpose                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| `service/nrsyncd.init`  | Init script (procd) orchestrating readiness, argument assembly, admin commands. |
+| `bin/nrsyncd`           | Prebuilt daemon (opaque); consumes `SSIDn=` args and performs periodic updates. |
+| `lib/nrsyncd_common.sh` | Shared helpers (normalization, retries, probes). Optional but preferred.        |
+| `config/nrsyncd.config` | Example UCI configuration template (formerly `rrm_nr.config`).                  |
+| `examples/`             | Example wireless config enabling required 802.11k features.                     |
+| `tests/`                | (If present) harness for basic functional validation.                           |
+| `docs/`                 | Documentation (CHANGELOG, developer notes).                                     |
 
 ## Coding Guidelines
 
@@ -39,30 +39,31 @@ Path | Purpose
 
 ## Metrics Overview
 
-Metric | Notes
--------|------
-`cache_hits/misses` | Per-SSID diff detection effectiveness.
-`nr_sets_sent/suppressed` | Interface-level push behavior (suppression health).
-`baseline_ssids` | Distinct SSIDs receiving baseline push this process.
-`remote_entries_merged` | Aggregate remote TXT line ingestion (raw).
-`remote_unique_cycle/total` | Per-cycle and cumulative uniqueness of remote entries.
-`nr_set_failures` | Hostapd update failures; investigate if non-zero.
-`neighbor_count_<iface>` | Post self-filter neighbor set sizes.
+| Metric                      | Notes                                                  |
+| --------------------------- | ------------------------------------------------------ |
+| `cache_hits/misses`         | Per-SSID diff detection effectiveness.                 |
+| `nr_sets_sent/suppressed`   | Interface-level push behavior (suppression health).    |
+| `baseline_ssids`            | Distinct SSIDs receiving baseline push this process.   |
+| `remote_entries_merged`     | Aggregate remote TXT line ingestion (raw).             |
+| `remote_unique_cycle/total` | Per-cycle and cumulative uniqueness of remote entries. |
+| `nr_set_failures`           | Hostapd update failures; investigate if non-zero.      |
+| `neighbor_count_<iface>`    | Post self-filter neighbor set sizes.                   |
 
 ## Admin Commands Implementation Notes
 
-Command | Internals
---------|----------
-`summary` | Parses metrics file; computes neighbor count min/max/avg.
-`reset_metrics` | Sends SIGUSR2 -> daemon resets counters & uniqueness.
-`refresh` | SIGUSR1 -> immediate update cycle outside normal cadence.
-`diag` | Quick probe for each hostapd object using legacy‑prefixed function `rrm_nr_probe_iface` (ubus method names retained).
+| Command         | Internals                                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `summary`       | Parses metrics file; computes neighbor count min/max/avg.                                                             |
+| `reset_metrics` | Sends SIGUSR2 -> daemon resets counters & uniqueness.                                                                 |
+| `refresh`       | SIGUSR1 -> immediate update cycle outside normal cadence.                                                             |
+| `diag`          | Quick probe for each hostapd object using legacy‑prefixed function `rrm_nr_probe_iface` (ubus method names retained). |
 
 ## Neighbor Assembly & Adaptive Retry
 
 The init script performs a bounded two‑phase readiness & fetch process to assemble ordered `SSIDn=` TXT arguments before launching the daemon.
 
 Key points:
+
 - Ordering invariant: Arguments are strictly `SSID1=… SSID2=… ...` followed only by metadata tokens (`v= c= h=` today). Never renumber existing positional SSID tokens; only append new highest `n` in future.
 - Delimiter `+` is reserved (invalid in SSIDs) to safely join SSID components when needed; do not alter.
 - Hostapd dependency: Relies on ubus method `rrm_nr_get_own`. If upstream changes this name, add a fallback probe sequence (e.g. discover supported methods via `ubus -v list hostapd.<iface>` and select the first matching replacement) rather than failing open‑ended.
@@ -71,26 +72,31 @@ Key points:
 - Log lines use concise, single‑line summaries to avoid log spam.
 
 Sample startup log (no skips, one interface briefly not ready):
+
 ```
 Assembled 2 SSID entries (config-skipped 0, not-ready 1)
 ```
 
 Sample reload (one configured skip + one still not providing data):
+
 ```
 Reload assembled 3 SSID entries (config-skipped 1, not-ready 1)
 ```
 
 Interpretation:
+
 - `config-skipped` counts interfaces explicitly excluded via `list skip_iface`.
 - `not-ready` counts enabled hostapd objects that returned no neighbor report value during the fetch window (often transient during immediate post‑radio bring‑up).
 
 Implementation Notes:
+
 - Detection of micro‑sleep capability is lazy (`command -v usleep >/dev/null`).
 - When high‑resolution sleep unavailable, fall back to one bounded whole‑second wait rather than multiple 1s sleeps to keep startup fast.
 - No unbounded loops: both quick and second pass are strictly capped by sanitized configuration.
 - Future interface additions must append new `SSIDn=` tokens without shifting earlier positions to preserve hash stability (`h=` md5 over concatenated SSID tokens).
 
 Developer Considerations for Changes:
+
 - If adding a third pass or alternative probe, keep total wall clock <5s in worst case for typical (<8 iface) deployments.
 - Any change impacting ordering must also update hash computation logic (currently first 8 hex of md5) in the init script.
 - Keep log wording stable; external parsers may rely on the structured fragments `(config-skipped X, not-ready Y)`.
@@ -123,7 +129,8 @@ Developer Considerations for Changes:
 
 - Use `NRSYNCD_MAX_CYCLES=3` (legacy `RRM_NR_MAX_CYCLES` still honored) env var for bounded test runs.
 - Add `debug=1` temporarily; remember to turn it off for performance.
-- Validate mDNS via: `ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'`.
+- Validate local advertisement via: `ubus call umdns announcements | jsonfilter -e '@["_nrsyncd_v1._udp.local"][*].txt[*]'`.
+- Validate network discovery via: `ubus call umdns browse | jsonfilter -e '@["_nrsyncd_v1._udp"][*].txt[*]'`.
 
 ## Troubleshooting Flow
 
