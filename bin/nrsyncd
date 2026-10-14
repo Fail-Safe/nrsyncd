@@ -96,7 +96,6 @@ rand_jitter() {
 	[ -z "$v" ] && echo 0 || echo $((v % (JITTER_MAX + 1)))
 }
 
-first_run=1
 last_umdns_update=0
 skip_ifaces="${NRSYNCD_SKIP_IFACES:-$RRM_NR_SKIP_IFACES}"
 sleep_pid=""
@@ -296,26 +295,47 @@ handle_usr2() {
 trap handle_usr1 USR1
 trap handle_usr2 USR2
 
-build_mapping() {
-	hostapd_members=$(ubus list hostapd.* 2>/dev/null | sed 's/^hostapd.//')
-	[ -z "$hostapd_members" ] && return
-	for i in $hostapd_members; do
-		ssid=$(iwinfo "$i" info 2>/dev/null | sed -n 's/^ESSID: "\(.*\)"$/\1/p')
-		[ -z "$ssid" ] && ssid=$(ubus call hostapd."$i" bss 2>/dev/null | jsonfilter -e '@.ssid' 2>/dev/null)
-		if [ -z "$ssid" ]; then
-			own_json=$(rrm_get_own_quick "$i" 2>/dev/null)
-			[ -n "$own_json" ] && ssid=$(echo "$own_json" | jsonfilter -e '$.value[1]' 2>/dev/null)
-		fi
-		[ -n "$ssid" ] && hm_put "$hashmap" "$i" "$ssid"
+# Replace the init instance's mDNS data with the reports collected this cycle.
+# set_data does not emit instance.update, so umdns must explicitly reload it.
+# Neither API changes the procd command or restarts the managed process/radios.
+publish_own_mdns() {
+	mdns_dir=$1
+	mdns_txt=""
+	mdns_count=0
+	mdns_hash_input=""
+	# Stable interface order keeps numbering and metadata unchanged on list reorder.
+	# shellcheck disable=SC2086
+	for mdns_ifc in $(printf '%s\n' $hostapd_members | sort); do
+		case " $skip_ifaces " in *" $mdns_ifc "*) continue ;; esac
+		mdns_value=$(cat "$mdns_dir/$mdns_ifc" 2>/dev/null)
+		[ -n "$mdns_value" ] || continue
+		mdns_count=$((mdns_count + 1))
+		mdns_token="SSID${mdns_count}=${mdns_value}"
+		mdns_hash_input="${mdns_hash_input}${mdns_token}|"
+		mdns_escaped=$(printf '%s' "$mdns_token" | sed 's/\\/\\\\/g; s/"/\\"/g')
+		mdns_txt="${mdns_txt}${mdns_txt:+,}\"${mdns_escaped}\""
 	done
+	if command -v md5sum >/dev/null 2>&1; then
+		mdns_hash=$(printf '%s' "$mdns_hash_input" | md5sum 2>/dev/null | awk '{print $1}' | cut -c1-8)
+	else
+		mdns_hash=$(printf '%s' "$mdns_hash_input" | cksum | awk '{print $1}')
+	fi
+	mdns_txt="${mdns_txt}${mdns_txt:+,}\"v=1\",\"c=${mdns_count}\",\"h=${mdns_hash}\""
+	# umdns keeps an existing remote TXT record's content when refreshing its TTL.
+	# Rotate both local record ID and DNS-SD instance on content changes so reload
+	# withdraws the old record and announces a new, uncached instance.
+	[ -n "${mdns_host:-}" ] || mdns_host=$(uname -n | cut -c1-54 | sed 's/\\/\\\\/g; s/"/\\"/g')
+	mdns_payload="{\"name\":\"nrsyncd\",\"instance\":\"instance1\",\"data\":{\"mdns\":{\"nrsyncd_v1_32025_${mdns_hash}\":{\"instance\":\"${mdns_host}-${mdns_hash}\",\"service\":\"_nrsyncd_v1._udp.local\",\"port\":32025,\"txt\":[${mdns_txt}]}}}}"
+	[ "$mdns_payload" = "${mdns_last_payload:-}" ] && return 0
+	if ubus call service set_data "$mdns_payload" >/dev/null 2>&1 &&
+		ubus call umdns reload >/dev/null 2>&1; then
+		mdns_last_payload=$mdns_payload
+	fi
 }
 
 do_updates() {
-	# First run: build SSID mapping (retry until we see interfaces)
-	if [ "$first_run" -eq 1 ]; then
-		build_mapping
-		[ -n "$hostapd_members" ] && first_run=0
-	fi
+	# Refresh membership every cycle; radios and their SSIDs can change at runtime.
+	hostapd_members=$(ubus list hostapd.* 2>/dev/null | sed 's/^hostapd.//')
 	now=$(date +%s 2>/dev/null)
 	[ -z "$now" ] && now=0
 	if [ $((now - last_umdns_update)) -ge "$UMDNS_REFRESH_INTERVAL" ]; then
@@ -323,28 +343,31 @@ do_updates() {
 		last_umdns_update=$now
 		[ "$UMDNS_SETTLE_DELAY" -gt 0 ] && sleep "$UMDNS_SETTLE_DELAY"
 	fi
-	[ -z "$hostapd_members" ] && hostapd_members=$(ubus list hostapd.* 2>/dev/null | sed 's/^hostapd.//')
-	[ -z "$hostapd_members" ] && return
+	if [ -z "$hostapd_members" ]; then
+		publish_own_mdns "$state_dir/no_own_reports"
+		return
+	fi
 
 	# Pass 1: collect per-interface own NR (single ubus call per iface) & build SSID membership map file
 	valdir=$(mktemp -d 2>/dev/null) || valdir=/tmp/nrsyncd_vals.$$ && mkdir -p "$valdir"
 	ssid_map="$valdir/ssid_map"
 	: >"$ssid_map"
 	for ifc in $hostapd_members; do
-		ssid=$(hm_get "$hashmap" "$ifc")
-		[ -z "$ssid" ] && continue
 		v_json=$(rrm_get_own_quick "$ifc") || continue
-		v_bssid=$(echo "$v_json" | jsonfilter -e '$.value[0]' 2>/dev/null)
-		v_ssid=$(echo "$v_json" | jsonfilter -e '$.value[1]' 2>/dev/null)
-		v_hex=$(echo "$v_json" | jsonfilter -e '$.value[2]' 2>/dev/null)
+		v_bssid=$(printf '%s' "$v_json" | jsonfilter -e '$.value[0]' 2>/dev/null)
+		v_ssid=$(printf '%s' "$v_json" | jsonfilter -e '$.value[1]' 2>/dev/null)
+		v_hex=$(printf '%s' "$v_json" | jsonfilter -e '$.value[2]' 2>/dev/null)
 		if [ -n "$v_bssid" ] && [ -n "$v_ssid" ] && [ -n "$v_hex" ]; then
-			v="[\"$v_bssid\",\"$v_ssid\",\"$v_hex\"]"
+			ssid=$v_ssid
+			hm_put "$hashmap" "$ifc" "$ssid"
+			v_ssid_json=$(printf '%s' "$v_ssid" | sed 's/\\/\\\\/g; s/"/\\"/g')
+			v="[\"$v_bssid\",\"$v_ssid_json\",\"$v_hex\"]"
 			printf '%s' "$v" >"$valdir/$ifc"
-		else
-			:
+			ssid_hash=$(printf '%s' "$ssid" | md5sum 2>/dev/null | awk '{print $1}')
+			printf '%s|%s\n' "$ssid_hash" "$ifc" >>"$ssid_map"
 		fi
-		echo "$ssid|$ifc" >>"$ssid_map"
 	done
+	publish_own_mdns "$valdir"
 
 	# Gather remote (mDNS) entries once
 	remote_tmp=$(mktemp 2>/dev/null) || remote_tmp=/tmp/nrsyncd_remote.$$
@@ -386,9 +409,14 @@ EOF
 	cache_dir="$state_dir/group_cache"
 	[ -d "$cache_dir" ] || mkdir -p "$cache_dir" 2>/dev/null
 
-	for ssid in $ssid_list; do
-		# Build group interface membership for this SSID
-		group_ifcs=$(grep -E "^${ssid}\|" "$ssid_map" 2>/dev/null | cut -d'|' -f2)
+	for ssid_hash in $ssid_list; do
+		# Group keys are hashes, so SSID whitespace and punctuation stay literal.
+		group_ifcs=$(awk -F'|' -v key="$ssid_hash" '$1 == key {print $2}' "$ssid_map")
+		ssid=""
+		for gi in $group_ifcs; do
+			ssid=$(hm_get "$hashmap" "$gi")
+			break
+		done
 		# Build candidate list (other ifaces in same SSID + remote entries)
 		cand_tmp=$(mktemp 2>/dev/null) || cand_tmp=/tmp/nrsyncd_cand.$$
 		for gi in $group_ifcs; do
@@ -402,8 +430,8 @@ EOF
 			rm -f "$cand_tmp"
 			continue
 		}
-		# De-dup via sort -u (still cheaper than per-iface ubus loops) – could be optimized later.
-		unique=$(sort -u "$cand_tmp" | sed '/^$/d')
+		# Local tuples precede discovered ones, so current own values win duplicates.
+		unique=$(cat "$cand_tmp")
 		rm -f "$cand_tmp"
 		[ -z "$unique" ] && { continue; }
 		# Canonicalize, de-duplicate (by SSID+BSSID) and produce stable ordering (SSID then BSSID)
@@ -413,41 +441,33 @@ EOF
 			l=$(printf '%s' "$line" | sed 's/^ *//;s/ *$//')
 			[ -z "$l" ] && continue
 			printf '%s' "$l" | grep -q '^\[' || continue
-			core=$(printf '%s' "$l" | sed -E 's/^\[ *//; s/ *\]$//')
-			bssid=$(printf '%s' "$core" | awk -F',' '{print $1}' | sed 's/[" ]//g')
-			ssid_part=$(printf '%s' "$core" | awk -F',' '{print $2}')
-			hex=$(printf '%s' "$core" | awk -F',' '{print $3}' | sed 's/[" ]//g')
-			ssid_part=$(printf '%s' "$ssid_part" | sed 's/^ *//;s/ *$//')
-			ssid_clean=$(printf '%s' "$ssid_part" | sed 's/^"//;s/"$//')
-			[ -n "$bssid" ] && [ -n "$ssid_clean" ] && [ -n "$hex" ] && printf '["%s","%s","%s"]\n' "$bssid" "$ssid_clean" "$hex" >>"$canon_tmp"
+			wrapped="{\"value\":$l}"
+			bssid=$(printf '%s' "$wrapped" | jsonfilter -e '$.value[0]' 2>/dev/null)
+			ssid_clean=$(printf '%s' "$wrapped" | jsonfilter -e '$.value[1]' 2>/dev/null)
+			hex=$(printf '%s' "$wrapped" | jsonfilter -e '$.value[2]' 2>/dev/null)
+			[ "$ssid_clean" = "$ssid" ] || continue
+			ssid_json=$(printf '%s' "$ssid_clean" | sed 's/\\/\\\\/g; s/"/\\"/g')
+			[ -n "$bssid" ] && [ -n "$hex" ] && printf '%s\t["%s","%s","%s"]\n' "$bssid" "$bssid" "$ssid_json" "$hex" >>"$canon_tmp"
 		done
 		canon_sorted_tmp="$valdir/canon_sorted.$$"
 		: >"$canon_sorted_tmp"
 		if [ -s "$canon_tmp" ]; then
-			awk 'BEGIN{FS="\""; OFS=""} /^\[/ { bssid=$2; ssid=$4; key=ssid"|"bssid; if(!seen[key]++){ printf "%s\t%s\t%s\n", ssid,bssid,$0 } }' "$canon_tmp" |
-				sort -t '\t' -k1,1 -k2,2 | cut -f3- >"$canon_sorted_tmp"
+			awk -F '\t' '!seen[$1]++' "$canon_tmp" |
+				sort | cut -f2- >"$canon_sorted_tmp"
 		fi
 		canon=$(cat "$canon_sorted_tmp" 2>/dev/null)
 		rm -f "$canon_tmp" "$canon_sorted_tmp" 2>/dev/null || true
-		[ -z "$canon" ] && {
-			debug "group_build: ssid='$ssid' canonicalization produced empty set"
-			list="[]"
-			compact=""
-		}
-		if [ -z "$list" ] || [ -z "$canon" ]; then
-			compact=$(printf '%s\n' "$canon" | awk 'NF{ if(n)printf(","); printf("%s",$0); n=1 }')
-			[ -n "$compact" ] && list="[$compact]" || list="[]"
-		fi
+		compact=$(printf '%s\n' "$canon" | awk 'NF{ if(n)printf(","); printf("%s",$0); n=1 }')
+		[ -n "$compact" ] && list="[$compact]" || list="[]"
 		debug "group_build: ssid='$ssid' canon_count=$(printf '%s\n' "$canon" | sed '/^$/d' | wc -l 2>/dev/null)"
 		# Group cache key
-		ssid_hash=$(printf '%s' "$ssid" | md5sum 2>/dev/null | awk '{print $1}')
-		[ -z "$ssid_hash" ] && ssid_hash=$(printf '%s' "$ssid" | wc -c)
 		cache_file="$cache_dir/$ssid_hash.list"
 		prev_list=""
 		[ -f "$cache_file" ] && prev_list=$(cat "$cache_file" 2>/dev/null)
-		# Compare stripped spaces
-		new_norm=$(printf '%s' "$list" | tr -d ' ')
-		old_norm=$(printf '%s' "$prev_list" | tr -d ' ')
+		# Canonical tuples retain significant spaces inside SSIDs.
+		new_norm=$list
+		old_norm=$prev_list
+		prev_members=$(cat "$cache_file.members" 2>/dev/null)
 		changed=0
 		# If previous list was empty array and we now have candidates (unique non-empty, list not '[]') force update
 		if [ "$old_norm" = "[]" ] && [ -n "$compact" ]; then
@@ -455,11 +475,9 @@ EOF
 		else
 			force_write=0
 		fi
-		if [ "$force_update_test" = 1 ] || [ "$new_norm" != "$old_norm" ] || [ "$force_write" = 1 ]; then
+		if [ "$force_update_test" = 1 ] || [ "$new_norm" != "$old_norm" ] || [ "$group_ifcs" != "$prev_members" ] || [ "$force_write" = 1 ]; then
 			changed=1
 			cache_misses=$((cache_misses + 1))
-			echo "$list" >"$cache_file" 2>/dev/null
-			debug "cache_write: ssid='$ssid' file=$(basename "$cache_file") size=${#list}"
 		else
 			cache_hits=$((cache_hits + 1))
 			debug "cache_hit: ssid='$ssid'"
@@ -482,12 +500,17 @@ EOF
 			continue
 		fi
 		# Apply updated list to each interface in group except those skipped
+		group_ok=1
 		for gi in $group_ifcs; do
 			case " $skip_ifaces " in *" $gi "*) continue ;; esac
 			own_val=$(cat "$valdir/$gi" 2>/dev/null)
 			final_list="$list"
 			if [ -n "$own_val" ]; then
-				filtered=$(printf '%s\n' "$canon" | grep -Fv -- "$own_val" | sed '/^$/d')
+				own_bssid=$(printf '%s' "{\"value\":$own_val}" | jsonfilter -e '$.value[0]' 2>/dev/null)
+				filtered=$(printf '%s\n' "$canon" | while IFS= read -r entry; do
+					entry_bssid=$(printf '%s' "{\"value\":$entry}" | jsonfilter -e '$.value[0]' 2>/dev/null)
+					[ "$entry_bssid" = "$own_bssid" ] || printf '%s\n' "$entry"
+				done)
 				if [ -n "$filtered" ]; then
 					joined=$(printf '%s\n' "$filtered" | awk 'NF{ if(n)printf(","); printf("%s",$0); n=1 }')
 					[ -n "$joined" ] && final_list="[$joined]" || final_list="[]"
@@ -512,12 +535,17 @@ EOF
 				done
 				neighbor_counts="$new_map ${gi}:$neighbor_count"
 			else
+				group_ok=0
 				nr_set_failures=$((nr_set_failures + 1))
 				debug "$gi: rrm_nr_set failed rc=$rc list=$final_list resp=${resp:-<empty>}"
 			fi
 		done
-		# Mark baseline sent for this SSID (so we don't force again)
-		case " $baseline_sent_hashes " in *" $ssid_hash "*) ;; *) baseline_sent_hashes="$baseline_sent_hashes $ssid_hash" ;; esac
+		# Commit suppression state only after all writes succeeded.
+		if [ "$group_ok" -eq 1 ]; then
+			printf '%s\n' "$list" >"$cache_file" 2>/dev/null
+			printf '%s\n' "$group_ifcs" >"$cache_file.members" 2>/dev/null
+			case " $baseline_sent_hashes " in *" $ssid_hash "*) ;; *) baseline_sent_hashes="$baseline_sent_hashes $ssid_hash" ;; esac
+		fi
 	done
 	rm -rf "$valdir" "$remote_tmp" 2>/dev/null || true
 }

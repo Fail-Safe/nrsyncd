@@ -2,6 +2,21 @@
 
 All notable changes will be documented here. Dates use UTC.
 
+## [1.0.5] - 2026-10-14
+
+### Fixed
+
+- Rebuild each SSID's candidates on every cycle so late peers, removed peers, radio channels, and local interface changes invalidate suppression correctly.
+- Match remote SSIDs literally, exclude self by BSSID, and prefer current local reports over stale discovery duplicates.
+- Commit suppression state only after successful hostapd writes.
+- Replace startup mDNS TXT data with current own reports through procd `service.set_data` and `umdns.reload`, without restarting radios. Republish only changed data and withdraw reports for unavailable or skipped interfaces.
+- Use content-derived DNS-SD instance names and local service IDs, withdrawing the previous identity on change. This avoids umdns retaining old TXT contents while refreshing their TTL under an unchanged DNS name.
+
+### Tests
+
+- Add state-transition regressions for candidate convergence, SSID isolation, advertisement freshness, unchanged suppression, and failed-write recovery.
+- Assert sibling neighbor contents in the full-daemon smoke scenario instead of merely checking for nonempty output.
+
 ## [1.0.4] - 2026-01-13
 
 ### Fixed
