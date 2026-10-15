@@ -34,7 +34,7 @@ _nrsyncd_ is an extracted and renamed continuation of the refactored [“Neighbo
 | Component                  | Purpose                                                                                     |
 | -------------------------- | ------------------------------------------------------------------------------------------- |
 | `service/nrsyncd.init`     | procd init script: gathers NR data via `ubus`, formats TXT args, registers mDNS service     |
-| `bin/nrsyncd`              | Opaque daemon consuming positional `SSIDn=<value>` args (prebuilt; no source here)          |
+| `bin/nrsyncd`              | POSIX shell daemon: collects live reports, refreshes discovery, and installs same-SSID neighbors |
 | `lib/nrsyncd_common.sh`    | Shared POSIX helpers (adaptive retry, iface mapping, millisecond sleep abstraction, probes) |
 | `examples/wireless.config` | Example `/etc/config/wireless` enabling 802.11k (`ieee80211k '1'`, `bss_transition '1'`)    |
 
@@ -45,6 +45,16 @@ _nrsyncd_ is an extracted and renamed continuation of the refactored [“Neighbo
 3. For each `hostapd.*`: call `ubus call <obj> rrm_nr_get_own` (method name unchanged) → JSON `{"value":"..."}`.
 4. Build concatenated string `+SSID<n>=<value>` (delimiter `+` chosen because invalid in SSIDs) then split into positional args.
 5. Start daemon & register versioned mDNS service `nrsyncd_v1` (type `_nrsyncd_v1._udp`) on UDP/32025 with those TXT records (all `SSIDn=` first, then metadata `v/c/h`). Legacy `_rrm_nr._udp` is browsed only as a fallback for discovery.
+6. Each update cycle collects current own reports again. Changed tuples replace the procd mDNS data via `service.set_data`, followed by `umdns.reload`. A content-derived DNS-SD identity avoids stale TXT caches and withdraws the old record; unchanged advertisements are left alone. This does not restart the daemon or reload Wi-Fi.
+7. Rebuild candidates separately for each exact SSID, preferring live local reports over discovered duplicates and excluding the receiving BSS by BSSID. Cache only successfully applied content and membership, so unchanged groups are suppressed while peer/radio changes propagate.
+
+For correctness checks, compare each `rrm_nr_list` with the live `rrm_nr_get_own`
+tuples for the same SSID across the cluster, excluding self. Counts alone and
+zero `nr_set_failures` do not prove that the tuples or channels are current.
+`umdns announcements` is the local advertisement; `umdns browse` is the
+receiver's discovery view. Normal discovery and update intervals still bound
+convergence. These checks establish candidate availability, not client adoption
+or roaming latency.
 
 ### Startup Sequence (Mermaid) 🧜‍♀️
 
@@ -608,7 +618,6 @@ apk add coreutils
 Summary (full discussion and future roadmap ideas in `docs/DEVELOPER.md`):
 
 - Large deployments (>20 AP) may see slower convergence.
-- Binary daemon is prebuilt (no current source in repo).
 - Remote ingestion relies on mDNS reachability; packet loss can delay uniqueness visibility.
 - Very large remote sets could inflate lists (future cap option contemplated).
 

@@ -15,5 +15,7 @@ export STATE_DIR
 "$DIR/scripts/scenario_skip.sh"
 "$DIR/scripts/scenario_reload.sh"
 "$DIR/scripts/scenario_metadata.sh"
+python3 "$DIR/scripts/test_candidates.py"
+python3 "$DIR/scripts/test_discovery.py"
 
 echo "All scenarios: PASS"

@@ -7,7 +7,7 @@ This document captures developer-focused details removed from the README for end
 | Path                    | Purpose                                                                         |
 | ----------------------- | ------------------------------------------------------------------------------- |
 | `service/nrsyncd.init`  | Init script (procd) orchestrating readiness, argument assembly, admin commands. |
-| `bin/nrsyncd`           | Prebuilt daemon (opaque); consumes `SSIDn=` args and performs periodic updates. |
+| `bin/nrsyncd`           | POSIX shell daemon collecting current own reports and installing per-SSID neighbors. |
 | `lib/nrsyncd_common.sh` | Shared helpers (normalization, retries, probes). Optional but preferred.        |
 | `config/nrsyncd.config` | Example UCI configuration template (formerly `rrm_nr.config`).                  |
 | `examples/`             | Example wireless config enabling required 802.11k features.                     |
@@ -117,6 +117,21 @@ Developer Considerations for Changes:
 
 - Each SSID hash tracked in `baseline_sent_hashes` in daemon memory.
 - If no diff but baseline not yet done, force a push (ensures hostapd populated).
+
+## Runtime Freshness
+
+- Discover current hostapd membership and collect own report tuples every cycle.
+- Rebuild each SSID group from scratch; compare decoded SSIDs by exact equality.
+- Keep current local tuples authoritative when discovery also contains that BSSID.
+- Track both canonical content and group membership in the suppression cache, committing only after successful writes.
+- Update the existing `instance1` mDNS data with `service.set_data` and explicitly call `umdns.reload`, since setting instance data alone emits no `instance.update` event. Cache the published payload only after both calls succeed.
+- Derive both the mDNS record ID and DNS-SD instance suffix from the current TXT hash. `umdns` can refresh an existing remote TXT record's TTL without replacing its contents; a new DNS identity avoids that stale cache, while removing the previous record ID sends its goodbye. Allow receiver garbage collection and a normal update cycle before asserting convergence.
+- Validate real hostapd tables and local/remote advertisements after deployment. A running process and healthy counters are insufficient.
+
+Run `sh tests/run-tests.sh` for the full-daemon scenarios and the isolated
+candidate/publication transition suites. The Python suites execute production
+shell functions against stateful fake APIs; they do not replace live ubus and
+hostapd verification.
 
 ## Future Work Ideas
 

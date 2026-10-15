@@ -26,18 +26,21 @@ echo "[basic] Started daemon PID=$PID (max cycles)" >&2
 wait $PID 2>/dev/null || true
 echo "[basic] Daemon exited (max cycles)" >&2
 
-# Assertions: runtime state file present, log contains update message
-STATE_FILE="/tmp/nrsyncd_runtime"
-[ -f "$STATE_FILE" ] || { echo "Missing runtime state file" >&2; exit 1; }
+# Each BSS must receive its sibling, never itself or malformed remote TXT.
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
 
-sleep 1
-if [ ! -s "$STATE_DIR/nrsyncd_set.log" ]; then
-  echo "[basic] DEBUG log tail:" >&2
-  tail -n 100 "$LOG_FILE" >&2 || true
-  echo "[basic] DEBUG state dir listing:" >&2
-  ls -l "$STATE_DIR" >&2 || true
-  echo "Expected nrsyncd_set.log not written" >&2
-  exit 1
-fi
+own = {}
+for iface in ("wlan0", "wlan1"):
+    own[iface] = json.loads(subprocess.check_output(
+        ["ubus", "call", "hostapd." + iface, "rrm_nr_get_own"], text=True
+    ))["value"]
+for iface, sibling in (("wlan0", "wlan1"), ("wlan1", "wlan0")):
+    actual = json.loads((Path(os.environ["STATE_DIR"]) / (iface + ".current")).read_text())
+    assert actual == [own[sibling]], (iface, actual, own[sibling])
+PY
 
 echo "Scenario basic: PASS"
